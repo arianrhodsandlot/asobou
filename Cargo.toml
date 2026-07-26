@@ -1,0 +1,14 @@
+[package]
+name = "asoby"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+ctrlc = "3"
+dirs = "5"
+image = { version = "0.25", default-features = false, features = ["png"] }
+viuer = "0.11"
+libc = "0.2"
+libloading = "0.8"

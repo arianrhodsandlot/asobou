@@ -1,3 +1,4 @@
+mod audio;
 mod cores;
 mod libretro;
 mod render;
@@ -90,6 +91,14 @@ struct Args {
     )]
     keep_scrollback: bool,
 
+    #[arg(
+        short = 'a',
+        long = "audio",
+        default_value = "cpal",
+        help = "Audio backend (cpal, null)"
+    )]
+    audio: String,
+
     #[arg(help = "Path to the ROM file to load")]
     rom: PathBuf,
 }
@@ -123,6 +132,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Cores directory: {}", cores_dir.display());
     let core = unsafe { libretro::load_core(&core_path)? };
+    let mut audio_backend = audio::create(&args.audio);
+    let target_sample_rate = match audio_backend.preferred_sample_rate() {
+        Ok(sample_rate) => sample_rate,
+        Err(e) => {
+            eprintln!("Audio device unavailable: {e}, falling back to null");
+            audio_backend = audio::create("null");
+            None
+        }
+    };
+    libretro::set_target_sample_rate(target_sample_rate);
 
     unsafe {
         let _version = (core.retro_api_version)();
@@ -148,9 +167,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let renderer = render::create(&args.renderer, &args.rom, args.keep_scrollback);
 
+        let audio_sink = match audio_backend.start(av_info.timing.sample_rate) {
+            Ok(sink) => sink,
+            Err(e) => {
+                eprintln!("Audio init failed: {e}, falling back to null");
+                audio_backend = audio::create("null");
+                audio_backend.start(av_info.timing.sample_rate)?
+            }
+        };
+        *libretro::AUDIO.lock().unwrap() = Some(audio_sink);
+
         println!(
-            "Core: {name} {version}  |  Video: {w}x{h} @ {:.0}fps  |  Renderer: {}",
-            av_info.timing.fps, args.renderer
+            "Core: {name} {version}  |  Video: {w}x{h} @ {:.0}fps  |  Renderer: {}  |  Audio: {}",
+            av_info.timing.fps,
+            args.renderer,
+            audio_backend.name()
         );
         if args.renderer == "debug" {
             println!("Saving screenshots to debug/  (ctrl+c to exit)\n");
@@ -217,6 +248,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(result) => result?,
             Err(_) => return Err(io::Error::other("renderer thread panicked").into()),
         }
+
+        libretro::AUDIO.lock().unwrap().take();
+        audio_backend.stop();
 
         (core.retro_unload_game)();
         (core.retro_deinit)();

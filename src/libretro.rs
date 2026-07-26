@@ -1,3 +1,4 @@
+use crate::audio::AudioSink;
 use crate::render::Frame;
 use libc::{c_char, c_int, c_uint, c_void};
 use libloading::Library;
@@ -27,6 +28,7 @@ const RETRO_ENV_GET_LANGUAGE: c_uint = 39;
 const RETRO_ENV_SET_CORE_OPTIONS_INTL: c_uint = 54;
 const RETRO_ENV_SET_CORE_OPTIONS_DISPLAY: c_uint = 55;
 const RETRO_ENV_GET_INPUT_BITMASKS: c_uint = 51 | 0x10000;
+const RETRO_ENV_GET_TARGET_SAMPLE_RATE: c_uint = 81 | 0x10000;
 const RETRO_ENV_SET_SERIALIZATION_QUIRKS: c_uint = 87;
 
 #[repr(C)]
@@ -93,7 +95,9 @@ pub struct Core {
 }
 
 pub static FRAME: Mutex<Option<Arc<Frame>>> = Mutex::new(None);
+pub static AUDIO: Mutex<Option<Box<dyn AudioSink + Send>>> = Mutex::new(None);
 static PIXEL_FORMAT: AtomicU32 = AtomicU32::new(PixelFormat::ZeroRgb1555 as u32);
+static TARGET_SAMPLE_RATE: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -198,6 +202,15 @@ unsafe extern "C" fn env_callback(cmd: c_uint, data: *mut c_void) -> bool {
         RETRO_ENV_SET_GEOMETRY => true,
         RETRO_ENV_SET_CORE_OPTIONS_DISPLAY => true,
         RETRO_ENV_GET_INPUT_BITMASKS => false,
+        RETRO_ENV_GET_TARGET_SAMPLE_RATE => {
+            let sample_rate = TARGET_SAMPLE_RATE.load(Ordering::Relaxed);
+            if data.is_null() || sample_rate == 0 {
+                false
+            } else {
+                unsafe { *(data as *mut c_uint) = sample_rate };
+                true
+            }
+        }
         RETRO_ENV_GET_LANGUAGE => {
             if !data.is_null() {
                 unsafe { *(data as *mut c_uint) = 0 };
@@ -318,6 +331,10 @@ pub unsafe fn setup_callbacks(core: &Core) {
     }
 }
 
+pub fn set_target_sample_rate(sample_rate: Option<u32>) {
+    TARGET_SAMPLE_RATE.store(sample_rate.unwrap_or(0), Ordering::Relaxed);
+}
+
 pub unsafe fn load_rom(core: &Core, rom_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
     let rom_data = std::fs::read(rom_path)?;
     let rom_path_c = CString::new(rom_path.to_string_lossy().as_bytes())?;
@@ -332,10 +349,25 @@ pub unsafe fn load_rom(core: &Core, rom_path: &Path) -> Result<bool, Box<dyn std
     Ok(unsafe { (core.retro_load_game)(&game_info) })
 }
 
-unsafe extern "C" fn audio_sample(_left: i16, _right: i16) {}
+unsafe extern "C" fn audio_sample(left: i16, right: i16) {
+    if let Ok(mut guard) = AUDIO.lock() {
+        if let Some(ref mut sink) = *guard {
+            sink.push(&[left, right]);
+        }
+    }
+}
 
-unsafe extern "C" fn audio_sample_batch(_data: *const i16, _frames: usize) -> usize {
-    _frames
+unsafe extern "C" fn audio_sample_batch(data: *const i16, frames: usize) -> usize {
+    if data.is_null() {
+        return 0;
+    }
+    if let Ok(mut guard) = AUDIO.lock() {
+        if let Some(ref mut backend) = *guard {
+            let samples = unsafe { std::slice::from_raw_parts(data, frames * 2) };
+            backend.push(samples);
+        }
+    }
+    frames
 }
 
 unsafe extern "C" fn input_poll() {}

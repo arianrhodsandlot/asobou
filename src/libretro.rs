@@ -6,8 +6,7 @@ use std::ffi::CString;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicU16;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 
 // Environment command constants
 const RETRO_ENV_GET_SYSTEM_DIRECTORY: c_uint = 9;
@@ -100,6 +99,7 @@ pub static AUDIO: Mutex<Option<Box<dyn AudioSink + Send>>> = Mutex::new(None);
 static PIXEL_FORMAT: AtomicU32 = AtomicU32::new(PixelFormat::ZeroRgb1555 as u32);
 static TARGET_SAMPLE_RATE: AtomicU32 = AtomicU32::new(0);
 static JOYPAD_BUTTONS: AtomicU16 = AtomicU16::new(0);
+static VIDEO_CAPTURE_ENABLED: AtomicBool = AtomicBool::new(true);
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -230,7 +230,7 @@ unsafe extern "C" fn video_refresh(
     height: c_uint,
     pitch: usize,
 ) {
-    if data.is_null() {
+    if data.is_null() || !VIDEO_CAPTURE_ENABLED.load(Ordering::Acquire) {
         return;
     }
 
@@ -341,6 +341,10 @@ pub fn set_joypad_buttons(buttons: u16) {
     JOYPAD_BUTTONS.store(buttons, Ordering::Release);
 }
 
+pub fn set_video_capture_enabled(enabled: bool) {
+    VIDEO_CAPTURE_ENABLED.store(enabled, Ordering::Release);
+}
+
 pub unsafe fn load_rom(core: &Core, rom_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
     let rom_data;
     let path_c;
@@ -435,7 +439,14 @@ fn joypad_button_value(buttons: u16, port: u32, device: u32, index: u32, id: u32
 
 #[cfg(test)]
 mod tests {
-    use super::{PixelFormat, convert_frame, convert_row, joypad_button_value};
+    use super::{
+        FRAME, PIXEL_FORMAT, PixelFormat, convert_frame, convert_row, joypad_button_value,
+        set_video_capture_enabled, video_refresh,
+    };
+    use crate::render::Frame;
+    use libc::c_void;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn converts_xrgb8888_and_skips_row_padding() {
@@ -485,6 +496,37 @@ mod tests {
         convert_row(&input, PixelFormat::ZeroRgb1555, &mut output);
 
         assert_eq!(output, [255, 0, 0, 0, 255, 0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn video_refresh_skips_conversion_when_capture_is_disabled() {
+        let previous_format = PIXEL_FORMAT.swap(PixelFormat::Xrgb8888 as u32, Ordering::Relaxed);
+        let previous_frame = FRAME.lock().unwrap().replace(Arc::new(Frame {
+            data: vec![1, 2, 3],
+            width: 1,
+            height: 1,
+        }));
+        let pixel = 0x0012_3456_u32;
+
+        set_video_capture_enabled(false);
+        unsafe {
+            video_refresh((&pixel as *const u32).cast::<c_void>(), 1, 1, 4);
+        }
+
+        assert_eq!(FRAME.lock().unwrap().as_ref().unwrap().data, [1, 2, 3]);
+
+        set_video_capture_enabled(true);
+        unsafe {
+            video_refresh((&pixel as *const u32).cast::<c_void>(), 1, 1, 4);
+        }
+
+        assert_eq!(
+            FRAME.lock().unwrap().as_ref().unwrap().data,
+            [0x12, 0x34, 0x56]
+        );
+
+        *FRAME.lock().unwrap() = previous_frame;
+        PIXEL_FORMAT.store(previous_format, Ordering::Relaxed);
     }
 
     #[test]

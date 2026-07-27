@@ -5,22 +5,24 @@ type Map = HashMap<&'static str, &'static str>;
 
 static MAP: LazyLock<Map> = LazyLock::new(|| {
     HashMap::from([
-        ("nes", "fceumm"),
+        ("32x", "picodrive"),
+        ("a26", "stella"),
+        ("a52", "a5200"),
+        ("bin", "genesis_plus_gx"),
         ("fds", "fceumm"),
+        ("gb", "mgba"),
+        ("gba", "mgba"),
+        ("gbc", "mgba"),
+        ("gen", "genesis_plus_gx"),
+        ("gg", "genesis_plus_gx"),
+        ("md", "genesis_plus_gx"),
+        ("nes", "fceumm"),
+        ("sfc", "snes9x"),
+        ("sg", "genesis_plus_gx"),
+        ("smc", "snes9x"),
+        ("sms", "genesis_plus_gx"),
         ("unf", "fceumm"),
         ("unif", "fceumm"),
-        ("sfc", "snes9x"),
-        ("smc", "snes9x"),
-        ("md", "genesis_plus_gx"),
-        ("bin", "genesis_plus_gx"),
-        ("gen", "genesis_plus_gx"),
-        ("sms", "genesis_plus_gx"),
-        ("gg", "genesis_plus_gx"),
-        ("sg", "genesis_plus_gx"),
-        ("gb", "mgba"),
-        ("gbc", "mgba"),
-        ("gba", "mgba"),
-        ("a52", "a5200"),
     ])
 });
 

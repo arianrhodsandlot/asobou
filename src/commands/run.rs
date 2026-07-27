@@ -5,9 +5,8 @@ use crossterm::event::{
 use std::io::{self, Read, Write};
 use std::mem;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{TrySendError, sync_channel};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -99,6 +98,67 @@ fn download_core(core_name: &str, cores_dir: &Path) -> Result<PathBuf, String> {
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
+struct LatestFrameMailbox {
+    state: Mutex<LatestFrameState>,
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct LatestFrameState {
+    frame: Option<Arc<crate::render::Frame>>,
+    closed: bool,
+    waiting: bool,
+}
+
+impl LatestFrameMailbox {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(LatestFrameState {
+                waiting: true,
+                ..LatestFrameState::default()
+            }),
+            ready: Condvar::new(),
+        }
+    }
+
+    fn publish(&self, frame: Arc<crate::render::Frame>) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return false;
+        }
+        state.frame = Some(frame);
+        state.waiting = false;
+        self.ready.notify_one();
+        true
+    }
+
+    fn receive(&self) -> Option<Arc<crate::render::Frame>> {
+        let mut state = self.state.lock().unwrap();
+        while state.frame.is_none() && !state.closed {
+            state.waiting = true;
+            state = self.ready.wait(state).unwrap();
+        }
+        if state.closed {
+            None
+        } else {
+            state.frame.take()
+        }
+    }
+
+    fn close(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.closed = true;
+        state.frame = None;
+        state.waiting = false;
+        self.ready.notify_all();
+    }
+
+    fn wants_frame(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        state.waiting && !state.closed
+    }
+}
+
 fn resolve_core(user_input: Option<&Path>, cores_dir: &Path, default_name: &str) -> PathBuf {
     let input = match user_input {
         Some(p) => p,
@@ -148,6 +208,7 @@ pub struct RunConfig {
 struct TerminalGuard {
     focus_enabled: bool,
     enhanced_keyboard_enabled: bool,
+    release_events_supported: bool,
 }
 
 impl TerminalGuard {
@@ -155,14 +216,17 @@ impl TerminalGuard {
         crossterm::terminal::enable_raw_mode()?;
         let mut stdout = io::stdout();
         let focus_enabled = crossterm::execute!(stdout, EnableFocusChange).is_ok();
+        let keyboard_enhancement_supported =
+            crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
         let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
             | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
             | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
-        let enhanced_keyboard_enabled =
-            crossterm::execute!(stdout, PushKeyboardEnhancementFlags(flags)).is_ok();
+        let enhanced_keyboard_enabled = keyboard_enhancement_supported
+            && crossterm::execute!(stdout, PushKeyboardEnhancementFlags(flags)).is_ok();
         Ok(Self {
             focus_enabled,
             enhanced_keyboard_enabled,
+            release_events_supported: cfg!(windows) || enhanced_keyboard_enabled,
         })
     }
 }
@@ -270,13 +334,14 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         renderer.setup(w, h);
 
         let terminal = TerminalGuard::enter()?;
-        let (frame_tx, frame_rx) = sync_channel::<Arc<crate::render::Frame>>(1);
+        let frame_mailbox = Arc::new(LatestFrameMailbox::new());
+        let render_mailbox = Arc::clone(&frame_mailbox);
         let render_thread = thread::spawn(move || -> io::Result<()> {
             let mut renderer = renderer;
             let mut stdout = io::stdout().lock();
             let status = "Press Q, Esc, or ctrl+c to exit  |  ctrl+r resets stuck input";
             let result = (|| {
-                while let Ok(frame) = frame_rx.recv() {
+                while let Some(frame) = render_mailbox.receive() {
                     renderer.render(&frame, &mut stdout)?;
                     let (_, rows) = crossterm::terminal::size()?;
                     write!(stdout, "\x1b[{};1H\x1b[K{status}", rows)?;
@@ -284,6 +349,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Ok(())
             })();
+            render_mailbox.close();
             drop(stdout);
             renderer.cleanup();
             result
@@ -296,9 +362,12 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         };
         let frame_duration = Duration::from_secs_f64(1.0 / fps);
         let render_duration = Duration::from_secs_f64(1.0 / config.render_fps as f64);
-        let mut next_frame = Instant::now();
-        let mut next_render = Instant::now();
-        let mut input = crate::input::InputState::default();
+        let schedule_start = Instant::now();
+        let mut next_frame = schedule_start;
+        let mut next_render = schedule_start;
+        let mut input = crate::input::InputState::with_release_events_supported(
+            terminal.release_events_supported,
+        );
         let mut input_error = None;
 
         while RUNNING.load(Ordering::SeqCst) {
@@ -336,21 +405,25 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
                 break;
             }
 
+            let capture_frame = Instant::now() >= next_render && frame_mailbox.wants_frame();
+            crate::libretro::set_video_capture_enabled(capture_frame);
             (core.retro_run)();
 
-            let now = Instant::now();
-            if now >= next_render {
+            if capture_frame {
                 let frame = crate::libretro::FRAME
                     .lock()
                     .ok()
                     .and_then(|guard| guard.as_ref().cloned());
-                if let Some(frame) = frame {
-                    match frame_tx.try_send(frame) {
-                        Ok(()) | Err(TrySendError::Full(_)) => {}
-                        Err(TrySendError::Disconnected(_)) => break,
-                    }
+                if let Some(frame) = frame
+                    && !frame_mailbox.publish(frame)
+                {
+                    break;
                 }
-                next_render = now + render_duration;
+                next_render += render_duration;
+                let now = Instant::now();
+                if next_render < now {
+                    next_render = now;
+                }
             }
 
             next_frame += frame_duration;
@@ -364,7 +437,8 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
 
         input.clear();
         crate::libretro::set_joypad_buttons(0);
-        drop(frame_tx);
+        crate::libretro::set_video_capture_enabled(true);
+        frame_mailbox.close();
         match render_thread.join() {
             Ok(result) => result?,
             Err(_) => return Err(io::Error::other("renderer thread panicked").into()),
@@ -385,4 +459,62 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(value: u8) -> Arc<crate::render::Frame> {
+        Arc::new(crate::render::Frame {
+            data: vec![value; 3],
+            width: 1,
+            height: 1,
+        })
+    }
+
+    fn mailbox() -> LatestFrameMailbox {
+        LatestFrameMailbox::new()
+    }
+
+    #[test]
+    fn mailbox_replaces_a_waiting_frame_with_the_latest() {
+        let mailbox = mailbox();
+        mailbox.publish(frame(1));
+        mailbox.publish(frame(2));
+
+        assert_eq!(mailbox.receive().unwrap().data, vec![2; 3]);
+    }
+
+    #[test]
+    fn closed_mailbox_discards_frames_and_rejects_new_ones() {
+        let mailbox = mailbox();
+        mailbox.publish(frame(1));
+        mailbox.close();
+
+        assert!(mailbox.receive().is_none());
+        assert!(!mailbox.publish(frame(2)));
+    }
+
+    #[test]
+    fn mailbox_requests_another_frame_after_the_current_one_is_received() {
+        let mailbox = Arc::new(mailbox());
+        assert!(mailbox.wants_frame());
+        mailbox.publish(frame(1));
+        assert!(!mailbox.wants_frame());
+        mailbox.receive();
+
+        let receiver_mailbox = Arc::clone(&mailbox);
+        let receiver = thread::spawn(move || receiver_mailbox.receive());
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut wanted = mailbox.wants_frame();
+        while !wanted && Instant::now() < deadline {
+            thread::yield_now();
+            wanted = mailbox.wants_frame();
+        }
+        mailbox.close();
+
+        assert!(wanted);
+        assert!(receiver.join().unwrap().is_none());
+    }
 }

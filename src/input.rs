@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 pub const JOYPAD_BUTTON_COUNT: usize = 16;
 pub const RETRO_DEVICE_JOYPAD: u32 = 1;
 pub const REPEAT_TIMEOUT: Duration = Duration::from_millis(140);
-pub const INITIAL_HOLD_GRACE: Duration = Duration::from_millis(650);
+pub const INITIAL_HOLD_GRACE: Duration = Duration::from_millis(250);
+pub const RELEASE_EVENT_FAILSAFE: Duration = Duration::from_millis(650);
 
 pub const BUTTON_B: usize = 0;
 pub const BUTTON_Y: usize = 1;
@@ -24,7 +25,6 @@ struct KeyState {
     pressed: bool,
     last_seen: Option<Instant>,
     repeat_seen: bool,
-    release_supported: bool,
 }
 
 impl KeyState {
@@ -33,7 +33,6 @@ impl KeyState {
             pressed: false,
             last_seen: None,
             repeat_seen: false,
-            release_supported: false,
         }
     }
 }
@@ -48,6 +47,7 @@ pub struct InputState {
     buttons: [bool; JOYPAD_BUTTON_COUNT],
     keys: [KeyState; MAPPED_KEY_COUNT],
     quit_requested: bool,
+    release_events_supported: bool,
 }
 
 impl Default for InputState {
@@ -56,11 +56,19 @@ impl Default for InputState {
             buttons: [false; JOYPAD_BUTTON_COUNT],
             keys: [KeyState::new(); MAPPED_KEY_COUNT],
             quit_requested: false,
+            release_events_supported: false,
         }
     }
 }
 
 impl InputState {
+    pub fn with_release_events_supported(release_events_supported: bool) -> Self {
+        Self {
+            release_events_supported,
+            ..Self::default()
+        }
+    }
+
     pub fn handle_key(&mut self, event: KeyEvent, now: Instant) {
         if event.kind != KeyEventKind::Release && is_quit_key(event) {
             self.quit_requested = true;
@@ -92,7 +100,7 @@ impl InputState {
                 key.pressed = false;
                 key.last_seen = None;
                 key.repeat_seen = false;
-                key.release_supported = true;
+                self.release_events_supported = true;
             }
         }
 
@@ -101,11 +109,13 @@ impl InputState {
 
     pub fn expire(&mut self, now: Instant) {
         for key in &mut self.keys {
-            if !key.pressed || key.release_supported {
+            if !key.pressed {
                 continue;
             }
             let timeout = if key.repeat_seen {
                 REPEAT_TIMEOUT
+            } else if self.release_events_supported {
+                RELEASE_EVENT_FAILSAFE
             } else {
                 INITIAL_HOLD_GRACE
             };
@@ -324,6 +334,33 @@ mod tests {
         state.expire(now + REPEAT_TIMEOUT);
 
         assert!(pressed(&state, BUTTON_RIGHT));
+    }
+
+    #[test]
+    fn release_aware_terminal_keeps_a_button_held_until_release() {
+        let now = Instant::now();
+        let mut state = InputState::with_release_events_supported(true);
+
+        state.handle_key(key(KeyCode::Char('x'), KeyEventKind::Press), now);
+        state.expire(now + INITIAL_HOLD_GRACE + Duration::from_millis(1));
+        assert!(pressed(&state, BUTTON_A));
+
+        state.handle_key(
+            key(KeyCode::Char('x'), KeyEventKind::Release),
+            now + INITIAL_HOLD_GRACE + Duration::from_millis(2),
+        );
+        assert!(!pressed(&state, BUTTON_A));
+    }
+
+    #[test]
+    fn release_aware_terminal_recovers_from_a_missing_release() {
+        let now = Instant::now();
+        let mut state = InputState::with_release_events_supported(true);
+
+        state.handle_key(key(KeyCode::Char('x'), KeyEventKind::Press), now);
+        state.expire(now + RELEASE_EVENT_FAILSAFE);
+
+        assert!(!pressed(&state, BUTTON_A));
     }
 
     #[test]

@@ -29,7 +29,7 @@ struct Args {
 
     #[arg(
         long = "render-fps",
-        default_value_t = 30,
+        default_value_t = 60,
         value_parser = clap::value_parser!(u32).range(1..=240),
         help = "Maximum terminal refresh rate"
     )]

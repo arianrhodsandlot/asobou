@@ -2,9 +2,9 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use std::io::{self, Read, Write};
 use std::mem;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{sync_channel, TrySendError};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{TrySendError, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -19,12 +19,18 @@ fn core_ext() -> &'static str {
 
 fn buildbot_base() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => Some("https://buildbot.libretro.com/nightly/apple/osx/arm64/latest/"),
-        ("macos", "x86_64") => Some("https://buildbot.libretro.com/nightly/apple/osx/x86_64/latest/"),
+        ("macos", "aarch64") => {
+            Some("https://buildbot.libretro.com/nightly/apple/osx/arm64/latest/")
+        }
+        ("macos", "x86_64") => {
+            Some("https://buildbot.libretro.com/nightly/apple/osx/x86_64/latest/")
+        }
         ("linux", "aarch64") => Some("https://buildbot.libretro.com/nightly/linux/aarch64/latest/"),
         ("linux", "x86_64") => Some("https://buildbot.libretro.com/nightly/linux/x86_64/latest/"),
         ("windows", "x86") => Some("https://buildbot.libretro.com/nightly/windows/x86/latest/"),
-        ("windows", "x86_64") => Some("https://buildbot.libretro.com/nightly/windows/x86_64/latest/"),
+        ("windows", "x86_64") => {
+            Some("https://buildbot.libretro.com/nightly/windows/x86_64/latest/")
+        }
         _ => None,
     }
 }
@@ -55,8 +61,7 @@ fn download_core(core_name: &str, cores_dir: &Path) -> Result<PathBuf, String> {
         .map_err(|e| format!("Read failed: {e}"))?;
 
     let cursor = std::io::Cursor::new(data);
-    let mut archive =
-        zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid zip: {e}"))?;
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid zip: {e}"))?;
 
     for i in 0..archive.len() {
         let mut file = archive
@@ -69,10 +74,9 @@ fn download_core(core_name: &str, cores_dir: &Path) -> Result<PathBuf, String> {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or(name);
             let out_path = cores_dir.join(&fname);
-            let mut out = std::fs::File::create(&out_path)
-                .map_err(|e| format!("Cannot create file: {e}"))?;
-            std::io::copy(&mut file, &mut out)
-                .map_err(|e| format!("Extract failed: {e}"))?;
+            let mut out =
+                std::fs::File::create(&out_path).map_err(|e| format!("Cannot create file: {e}"))?;
+            std::io::copy(&mut file, &mut out).map_err(|e| format!("Extract failed: {e}"))?;
             eprintln!("  Saved: {}", out_path.display());
             return Ok(out_path);
         }

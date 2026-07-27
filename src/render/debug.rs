@@ -77,8 +77,18 @@ fn iso_format(unix_secs: u64) -> String {
     }
 
     let month_days: [u64; 12] = [
-        31, if is_leap(y) { 29 } else { 28 }, 31, 30, 31, 30,
-        31, 31, 30, 31, 30, 31,
+        31,
+        if is_leap(y) { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
     ];
     let mut m = 0;
     for (i, &md) in month_days.iter().enumerate() {

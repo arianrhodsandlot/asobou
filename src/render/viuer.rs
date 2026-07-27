@@ -1,6 +1,6 @@
 use super::Frame;
 use super::Renderer;
-use base64::prelude::{Engine as _, BASE64_STANDARD};
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 use image::{DynamicImage, RgbImage};
 use std::io::{self, IsTerminal, Write};
 
@@ -100,9 +100,12 @@ impl ViuRenderer {
             command.extend_from_slice(chunk);
             command.extend_from_slice(b"\x1b\\");
         }
+        let (tw, th) = crossterm::terminal::size().unwrap_or((80, 24));
+        let col = (tw as u32).saturating_sub(columns) / 2 + 1;
+        let row = (th as u32).saturating_sub(rows) / 2 + 1;
         write!(
             command,
-            "\x1b[H\x1b_Ga=p,i={},p={},c={},r={},C=1,q=2;\x1b\\\x1b[?2026l",
+            "\x1b[{row};{col}H\x1b_Ga=p,i={},p={},c={},r={},C=1,q=2;\x1b\\\x1b[?2026l",
             KITTY_IMAGE_ID, KITTY_PLACEMENT_ID, columns, rows
         )?;
 
@@ -138,6 +141,14 @@ impl Renderer for ViuRenderer {
         if self.kitty_streaming {
             self.render_kitty(&img, out)
         } else {
+            if self.config.absolute_offset {
+                if let Ok((tw, th)) = crossterm::terminal::size() {
+                    let resized = viuer::resize(&img, self.config.width, self.config.height);
+                    let rows = resized.height().div_ceil(2);
+                    self.config.x = tw.saturating_sub(resized.width() as u16) / 2;
+                    self.config.y = (th.saturating_sub(rows as u16) / 2) as i16;
+                }
+            }
             let _ = viuer::print(&img, &self.config);
             Ok(())
         }
@@ -156,7 +167,7 @@ impl Drop for ViuRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{ViuRenderer, KITTY_IMAGE_ID, KITTY_PLACEMENT_ID};
+    use super::{KITTY_IMAGE_ID, KITTY_PLACEMENT_ID, ViuRenderer};
     use image::{DynamicImage, Rgb, RgbImage};
 
     #[test]

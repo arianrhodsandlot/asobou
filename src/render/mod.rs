@@ -1,4 +1,5 @@
 pub mod ascii;
+pub mod block;
 pub mod debug;
 pub mod viuer;
 
@@ -16,11 +17,7 @@ pub trait Renderer: Send {
     fn cleanup(&mut self);
 }
 
-pub fn create(
-    name: &str,
-    rom_path: &std::path::Path,
-    keep_scrollback: bool,
-) -> Box<dyn Renderer> {
+pub fn create(name: &str, rom_path: &std::path::Path, keep_scrollback: bool) -> Box<dyn Renderer> {
     match name {
         "debug" => {
             let stem = rom_path
@@ -29,6 +26,7 @@ pub fn create(
                 .unwrap_or("unknown");
             Box::new(debug::DebugRenderer::new(stem))
         }
+        "block" => Box::new(block::BlockRenderer::new(keep_scrollback)),
         "ascii" => Box::new(ascii::AsciiRenderer::new(keep_scrollback)),
         _ => Box::new(viuer::ViuRenderer::new(keep_scrollback)),
     }

@@ -4,9 +4,9 @@ use libc::{c_char, c_int, c_uint, c_void};
 use libloading::Library;
 use std::ffi::CString;
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 // Environment command constants
 const RETRO_ENV_GET_SYSTEM_DIRECTORY: c_uint = 9;
@@ -383,7 +383,7 @@ unsafe extern "C" fn input_state(
 
 #[cfg(test)]
 mod tests {
-    use super::{convert_frame, convert_row, PixelFormat};
+    use super::{PixelFormat, convert_frame, convert_row};
 
     #[test]
     fn converts_xrgb8888_and_skips_row_padding() {
@@ -403,7 +403,9 @@ mod tests {
 
         assert_eq!(
             output,
-            [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xad, 0xbe, 0xef, 0x10, 0x20]
+            [
+                0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xad, 0xbe, 0xef, 0x10, 0x20
+            ]
         );
     }
 

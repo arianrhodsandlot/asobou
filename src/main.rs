@@ -14,8 +14,8 @@ struct Args {
     #[arg(
         short = 'r',
         long = "renderer",
-        default_value = "viuer",
-        help = "Rendering backend (viuer, ascii, debug)"
+        default_value = "auto",
+        help = "Rendering backend (auto, block, ascii, debug)"
     )]
     renderer: String,
 

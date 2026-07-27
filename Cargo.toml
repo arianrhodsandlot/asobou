@@ -9,6 +9,8 @@ clap = { version = "4", features = ["derive"] }
 cpal = "0.15"
 ctrlc = "3"
 dirs = "5"
+ureq = "3"
+zip = "2"
 image = { version = "0.25", default-features = false, features = ["png"] }
 libc = "0.2"
 libloading = "0.8"

@@ -38,6 +38,13 @@ fn buildbot_base() -> Option<&'static str> {
     }
 }
 
+fn http_agent() -> ureq::Agent {
+    ureq::config::Config::builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .into()
+}
+
 fn download_core(core_name: &str, cores_dir: &Path) -> Result<PathBuf, String> {
     let base = buildbot_base()
         .ok_or_else(|| "Auto-download not supported on this platform".to_string())?;
@@ -46,7 +53,8 @@ fn download_core(core_name: &str, cores_dir: &Path) -> Result<PathBuf, String> {
     eprintln!("Downloading {core_name} core...");
     eprintln!("  From: {url}");
 
-    let resp = ureq::get(&url)
+    let agent = http_agent();
+    let resp = agent.get(&url)
         .call()
         .map_err(|e| format!("Download failed: {e}"))?;
 
@@ -172,6 +180,7 @@ impl Drop for TerminalGuard {
 }
 
 pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
+    ctrlc::set_handler(|| std::process::exit(0))?;
     RUNNING.store(true, Ordering::SeqCst);
     crate::libretro::set_joypad_buttons(0);
 
@@ -182,6 +191,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&cores_dir).ok();
 
     let core_name = crate::cores::for_rom(&config.rom);
+    eprintln!("Resolving core: {core_name}");
     let core_path = resolve_core(config.core.as_deref(), &cores_dir, core_name);
 
     let core_path = if core_path.exists() {
@@ -211,10 +221,6 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Error: file not found: {}", config.rom.display());
         std::process::exit(1);
     }
-
-    ctrlc::set_handler(|| {
-        RUNNING.store(false, Ordering::SeqCst);
-    })?;
 
     println!("Cores directory: {}", cores_dir.display());
     let core = unsafe { crate::libretro::load_core(&core_path)? };
@@ -275,11 +281,13 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             println!("Press Q, Esc, or ctrl+c to exit  |  ctrl+r resets stuck input\n");
         }
 
+        let mut renderer = renderer;
+        renderer.setup(w, h);
+
         let terminal = TerminalGuard::enter()?;
         let (frame_tx, frame_rx) = sync_channel::<Arc<crate::render::Frame>>(1);
         let render_thread = thread::spawn(move || -> io::Result<()> {
             let mut renderer = renderer;
-            renderer.setup(w, h);
             let mut stdout = io::stdout().lock();
             let result = (|| {
                 while let Ok(frame) = frame_rx.recv() {

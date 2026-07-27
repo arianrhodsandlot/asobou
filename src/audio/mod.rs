@@ -6,7 +6,6 @@ pub trait AudioSink: Send {
 }
 
 pub trait AudioBackend {
-    fn name(&self) -> &'static str;
     fn preferred_sample_rate(&mut self) -> Result<Option<u32>, String>;
     fn start(&mut self, sample_rate: f64) -> Result<Box<dyn AudioSink + Send>, String>;
     fn stop(&mut self);

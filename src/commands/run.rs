@@ -40,7 +40,7 @@ fn buildbot_base() -> Option<&'static str> {
 
 fn http_agent() -> ureq::Agent {
     ureq::config::Config::builder()
-        .timeout_global(Some(Duration::from_secs(30)))
+        .timeout_global(Some(Duration::from_secs(300)))
         .build()
         .into()
 }
@@ -54,7 +54,8 @@ fn download_core(core_name: &str, cores_dir: &Path) -> Result<PathBuf, String> {
     eprintln!("  From: {url}");
 
     let agent = http_agent();
-    let resp = agent.get(&url)
+    let resp = agent
+        .get(&url)
         .call()
         .map_err(|e| format!("Download failed: {e}"))?;
 
@@ -191,7 +192,6 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&cores_dir).ok();
 
     let core_name = crate::cores::for_rom(&config.rom);
-    eprintln!("Resolving core: {core_name}");
     let core_path = resolve_core(config.core.as_deref(), &cores_dir, core_name);
 
     let core_path = if core_path.exists() {
@@ -222,7 +222,6 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    println!("Cores directory: {}", cores_dir.display());
     let core = unsafe { crate::libretro::load_core(&core_path)? };
     let mut audio_backend = crate::audio::create(&config.audio);
     let target_sample_rate = match audio_backend.preferred_sample_rate() {
@@ -242,8 +241,6 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
 
         let mut sys_info: crate::libretro::RetroSystemInfo = mem::zeroed();
         (core.retro_get_system_info)(&mut sys_info);
-        let name = std::ffi::CStr::from_ptr(sys_info.library_name).to_string_lossy();
-        let version = std::ffi::CStr::from_ptr(sys_info.library_version).to_string_lossy();
 
         let loaded = crate::libretro::load_rom(&core, &config.rom)?;
         if !loaded {
@@ -269,18 +266,6 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         };
         *crate::libretro::AUDIO.lock().unwrap() = Some(audio_sink);
 
-        println!(
-            "Core: {name} {version}  |  Video: {w}x{h} @ {:.0}fps  |  Renderer: {}  |  Audio: {}",
-            av_info.timing.fps,
-            config.renderer,
-            audio_backend.name()
-        );
-        if config.renderer == "debug" {
-            println!("Saving screenshots to debug/  (Q, Esc, or ctrl+c to exit)\n");
-        } else {
-            println!("Press Q, Esc, or ctrl+c to exit  |  ctrl+r resets stuck input\n");
-        }
-
         let mut renderer = renderer;
         renderer.setup(w, h);
 
@@ -289,9 +274,12 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         let render_thread = thread::spawn(move || -> io::Result<()> {
             let mut renderer = renderer;
             let mut stdout = io::stdout().lock();
+            let status = "Press Q, Esc, or ctrl+c to exit  |  ctrl+r resets stuck input";
             let result = (|| {
                 while let Ok(frame) = frame_rx.recv() {
                     renderer.render(&frame, &mut stdout)?;
+                    let (_, rows) = crossterm::terminal::size()?;
+                    write!(stdout, "\x1b[{};1H\x1b[K{status}", rows)?;
                     stdout.flush()?;
                 }
                 Ok(())

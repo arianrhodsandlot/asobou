@@ -4,10 +4,6 @@ pub struct NullBackend;
 struct NullSink;
 
 impl AudioBackend for NullBackend {
-    fn name(&self) -> &'static str {
-        "null"
-    }
-
     fn preferred_sample_rate(&mut self) -> Result<Option<u32>, String> {
         Ok(None)
     }

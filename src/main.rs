@@ -50,18 +50,23 @@ struct Args {
     audio: String,
 
     #[arg(help = "Path to the ROM file to load")]
-    rom: PathBuf,
+    rom: Option<PathBuf>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    let Some(rom) = args.rom else {
+        let mut cmd = <Args as clap::CommandFactory>::command();
+        cmd.print_help()?;
+        return Ok(());
+    };
     let config = RunConfig {
         renderer: args.renderer,
         core: args.core,
         render_fps: args.render_fps,
         keep_scrollback: args.keep_scrollback,
         audio: args.audio,
-        rom: args.rom,
+        rom,
     };
     commands::run::run(config)
 }

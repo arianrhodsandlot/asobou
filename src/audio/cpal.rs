@@ -52,10 +52,6 @@ impl CpalBackend {
 }
 
 impl AudioBackend for CpalBackend {
-    fn name(&self) -> &'static str {
-        "cpal"
-    }
-
     fn preferred_sample_rate(&mut self) -> Result<Option<u32>, String> {
         self.prepare()?;
         Ok(self.config.as_ref().map(|config| config.sample_rate().0))

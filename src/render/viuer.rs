@@ -130,9 +130,6 @@ impl ViuRenderer {
 impl Renderer for ViuRenderer {
     fn setup(&mut self, _src_width: u32, _src_height: u32) {
         self.detect_kitty();
-        if self.kitty_streaming {
-            eprintln!("Terminal protocol: Kitty graphics (streaming)");
-        }
         self.enter_screen();
     }
 

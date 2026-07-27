@@ -1,3 +1,4 @@
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use std::io::{self, Read, Write};
 use std::mem;
 use std::path::{Path, PathBuf};
@@ -128,6 +129,21 @@ pub struct RunConfig {
     pub rom: PathBuf,
 }
 
+struct RawGuard;
+
+impl RawGuard {
+    fn enter() -> io::Result<Self> {
+        crossterm::terminal::enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+}
+
 pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
     let data_home = std::env::var("XDG_DATA_HOME")
         .map(PathBuf::from)
@@ -256,7 +272,19 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         let mut next_frame = Instant::now();
         let mut next_render = Instant::now();
 
+        let _raw = RawGuard::enter()?;
+
         while RUNNING.load(Ordering::SeqCst) {
+            if event::poll(Duration::ZERO).unwrap_or(false) {
+                if let Ok(Event::Key(key)) = event::read() {
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        RUNNING.store(false, Ordering::SeqCst);
+                    }
+                }
+            }
+
             (core.retro_run)();
 
             let now = Instant::now();

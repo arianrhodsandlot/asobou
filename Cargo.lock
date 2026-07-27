@@ -132,6 +132,7 @@ dependencies = [
  "libc",
  "libloading",
  "ringbuf",
+ "tempfile",
  "ureq",
  "viuer",
  "zip",

@@ -342,17 +342,51 @@ pub fn set_joypad_buttons(buttons: u16) {
 }
 
 pub unsafe fn load_rom(core: &Core, rom_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
-    let rom_data = std::fs::read(rom_path)?;
-    let rom_path_c = CString::new(rom_path.to_string_lossy().as_bytes())?;
+    let rom_data;
+    let path_c;
+    let mut _temp_file = None;
+
+    if rom_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+    {
+        let file = std::fs::File::open(rom_path)?;
+        let mut archive = zip::ZipArchive::new(file)?;
+        let mut first = archive.by_index(0)?;
+        let name = first.name().to_string();
+        let ext = std::path::Path::new(&name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("rom");
+        let mut data = Vec::with_capacity(first.size() as usize);
+        std::io::Read::read_to_end(&mut first, &mut data)?;
+
+        let mut tmp = tempfile::Builder::new()
+            .suffix(&format!(".{ext}"))
+            .tempfile()?;
+        std::io::Write::write_all(&mut tmp, &data)?;
+        rom_data = data;
+        path_c = CString::new(tmp.path().to_string_lossy().as_bytes())?.into_raw();
+        _temp_file = Some(tmp);
+    } else {
+        rom_data = std::fs::read(rom_path)?;
+        path_c = CString::new(rom_path.to_string_lossy().as_bytes())?.into_raw();
+    }
 
     let game_info = RetroGameInfo {
-        path: rom_path_c.as_ptr(),
+        path: path_c,
         data: rom_data.as_ptr() as *const c_void,
         size: rom_data.len(),
         meta: std::ptr::null(),
     };
 
-    Ok(unsafe { (core.retro_load_game)(&game_info) })
+    let ok = unsafe { (core.retro_load_game)(&game_info) };
+    if !path_c.is_null() {
+        unsafe { drop(CString::from_raw(path_c as *mut c_char)); }
+    }
+    drop(_temp_file);
+    Ok(ok)
 }
 
 unsafe extern "C" fn audio_sample(left: i16, right: i16) {

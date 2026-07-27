@@ -16,4 +16,5 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 libc = "0.2"
 libloading = "0.8"
 ringbuf = "0.4"
+tempfile = "3"
 viuer = "0.11"

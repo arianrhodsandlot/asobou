@@ -24,9 +24,24 @@ static MAP: LazyLock<Map> = LazyLock::new(|| {
     ])
 });
 
+fn extension(path: &std::path::Path) -> Option<String> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    if ext == "zip" {
+        let file = std::fs::File::open(path).ok()?;
+        let mut archive = zip::ZipArchive::new(file).ok()?;
+        let first = archive.by_index(0).ok()?;
+        let name = first.name().to_string();
+        return std::path::Path::new(&name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+    }
+    Some(ext)
+}
+
 pub fn for_rom(path: &std::path::Path) -> &'static str {
-    path.extension()
-        .and_then(|e| e.to_str())
+    extension(path)
+        .as_deref()
         .and_then(|e| MAP.get(e))
         .copied()
         .unwrap_or("nestopia")

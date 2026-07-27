@@ -1,6 +1,7 @@
 mod audio;
 mod commands;
 mod cores;
+mod input;
 mod libretro;
 mod render;
 

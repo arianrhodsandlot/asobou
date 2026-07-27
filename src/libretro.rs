@@ -6,6 +6,7 @@ use std::ffi::CString;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicU16;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 // Environment command constants
@@ -98,6 +99,7 @@ pub static FRAME: Mutex<Option<Arc<Frame>>> = Mutex::new(None);
 pub static AUDIO: Mutex<Option<Box<dyn AudioSink + Send>>> = Mutex::new(None);
 static PIXEL_FORMAT: AtomicU32 = AtomicU32::new(PixelFormat::ZeroRgb1555 as u32);
 static TARGET_SAMPLE_RATE: AtomicU32 = AtomicU32::new(0);
+static JOYPAD_BUTTONS: AtomicU16 = AtomicU16::new(0);
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -335,6 +337,10 @@ pub fn set_target_sample_rate(sample_rate: Option<u32>) {
     TARGET_SAMPLE_RATE.store(sample_rate.unwrap_or(0), Ordering::Relaxed);
 }
 
+pub fn set_joypad_buttons(buttons: u16) {
+    JOYPAD_BUTTONS.store(buttons, Ordering::Release);
+}
+
 pub unsafe fn load_rom(core: &Core, rom_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
     let rom_data = std::fs::read(rom_path)?;
     let rom_path_c = CString::new(rom_path.to_string_lossy().as_bytes())?;
@@ -372,18 +378,30 @@ unsafe extern "C" fn audio_sample_batch(data: *const i16, frames: usize) -> usiz
 
 unsafe extern "C" fn input_poll() {}
 
-unsafe extern "C" fn input_state(
-    _port: c_uint,
-    _device: c_uint,
-    _index: c_uint,
-    _id: c_uint,
-) -> i16 {
-    0
+unsafe extern "C" fn input_state(port: c_uint, device: c_uint, index: c_uint, id: c_uint) -> i16 {
+    joypad_button_value(
+        JOYPAD_BUTTONS.load(Ordering::Acquire),
+        port,
+        device,
+        index,
+        id,
+    )
+}
+
+fn joypad_button_value(buttons: u16, port: u32, device: u32, index: u32, id: u32) -> i16 {
+    if port != 0
+        || device != crate::input::RETRO_DEVICE_JOYPAD
+        || index != 0
+        || id >= crate::input::JOYPAD_BUTTON_COUNT as u32
+    {
+        return 0;
+    }
+    i16::from(buttons & (1 << id) != 0)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PixelFormat, convert_frame, convert_row};
+    use super::{PixelFormat, convert_frame, convert_row, joypad_button_value};
 
     #[test]
     fn converts_xrgb8888_and_skips_row_padding() {
@@ -433,5 +451,55 @@ mod tests {
         convert_row(&input, PixelFormat::ZeroRgb1555, &mut output);
 
         assert_eq!(output, [255, 0, 0, 0, 255, 0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn input_state_validates_libretro_query_fields() {
+        let buttons = 1 << crate::input::BUTTON_A;
+
+        assert_eq!(
+            joypad_button_value(
+                buttons,
+                0,
+                crate::input::RETRO_DEVICE_JOYPAD,
+                0,
+                crate::input::BUTTON_A as u32
+            ),
+            1
+        );
+        assert_eq!(
+            joypad_button_value(
+                buttons,
+                0,
+                crate::input::RETRO_DEVICE_JOYPAD,
+                0,
+                crate::input::JOYPAD_BUTTON_COUNT as u32
+            ),
+            0
+        );
+        assert_eq!(
+            joypad_button_value(
+                buttons,
+                1,
+                crate::input::RETRO_DEVICE_JOYPAD,
+                0,
+                crate::input::BUTTON_A as u32
+            ),
+            0
+        );
+        assert_eq!(
+            joypad_button_value(buttons, 0, 0, 0, crate::input::BUTTON_A as u32),
+            0
+        );
+        assert_eq!(
+            joypad_button_value(
+                buttons,
+                0,
+                crate::input::RETRO_DEVICE_JOYPAD,
+                1,
+                crate::input::BUTTON_A as u32
+            ),
+            0
+        );
     }
 }

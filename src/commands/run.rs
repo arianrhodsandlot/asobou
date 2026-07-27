@@ -1,4 +1,7 @@
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{
+    self, DisableFocusChange, EnableFocusChange, Event, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use std::io::{self, Read, Write};
 use std::mem;
 use std::path::{Path, PathBuf};
@@ -133,22 +136,45 @@ pub struct RunConfig {
     pub rom: PathBuf,
 }
 
-struct RawGuard;
+struct TerminalGuard {
+    focus_enabled: bool,
+    enhanced_keyboard_enabled: bool,
+}
 
-impl RawGuard {
+impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
-        Ok(Self)
+        let mut stdout = io::stdout();
+        let focus_enabled = crossterm::execute!(stdout, EnableFocusChange).is_ok();
+        let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
+        let enhanced_keyboard_enabled =
+            crossterm::execute!(stdout, PushKeyboardEnhancementFlags(flags)).is_ok();
+        Ok(Self {
+            focus_enabled,
+            enhanced_keyboard_enabled,
+        })
     }
 }
 
-impl Drop for RawGuard {
+impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        let mut stdout = io::stdout();
+        if self.enhanced_keyboard_enabled {
+            let _ = crossterm::execute!(stdout, PopKeyboardEnhancementFlags);
+        }
+        if self.focus_enabled {
+            let _ = crossterm::execute!(stdout, DisableFocusChange);
+        }
         let _ = crossterm::terminal::disable_raw_mode();
     }
 }
 
 pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
+    RUNNING.store(true, Ordering::SeqCst);
+    crate::libretro::set_joypad_buttons(0);
+
     let data_home = std::env::var("XDG_DATA_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| dirs::data_local_dir().unwrap());
@@ -244,11 +270,12 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             audio_backend.name()
         );
         if config.renderer == "debug" {
-            println!("Saving screenshots to debug/  (ctrl+c to exit)\n");
+            println!("Saving screenshots to debug/  (Q, Esc, or ctrl+c to exit)\n");
         } else {
-            println!("Press ctrl+c to exit\n");
+            println!("Press Q, Esc, or ctrl+c to exit  |  ctrl+r resets stuck input\n");
         }
 
+        let terminal = TerminalGuard::enter()?;
         let (frame_tx, frame_rx) = sync_channel::<Arc<crate::render::Frame>>(1);
         let render_thread = thread::spawn(move || -> io::Result<()> {
             let mut renderer = renderer;
@@ -275,18 +302,42 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         let render_duration = Duration::from_secs_f64(1.0 / config.render_fps as f64);
         let mut next_frame = Instant::now();
         let mut next_render = Instant::now();
-
-        let _raw = RawGuard::enter()?;
+        let mut input = crate::input::InputState::default();
+        let mut input_error = None;
 
         while RUNNING.load(Ordering::SeqCst) {
-            if event::poll(Duration::ZERO).unwrap_or(false) {
-                if let Ok(Event::Key(key)) = event::read() {
-                    if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
+            loop {
+                match event::poll(Duration::ZERO) {
+                    Ok(true) => match event::read() {
+                        Ok(Event::Key(key)) => {
+                            input.handle_key(key, Instant::now());
+                            if input.quit_requested() {
+                                RUNNING.store(false, Ordering::SeqCst);
+                            }
+                        }
+                        Ok(Event::FocusLost) => input.clear(),
+                        Ok(_) => {}
+                        Err(error) => {
+                            input.clear();
+                            input_error = Some(error);
+                            RUNNING.store(false, Ordering::SeqCst);
+                            break;
+                        }
+                    },
+                    Ok(false) => break,
+                    Err(error) => {
+                        input.clear();
+                        input_error = Some(error);
                         RUNNING.store(false, Ordering::SeqCst);
+                        break;
                     }
                 }
+            }
+
+            input.expire(Instant::now());
+            crate::libretro::set_joypad_buttons(input.button_mask());
+            if !RUNNING.load(Ordering::SeqCst) {
+                break;
             }
 
             (core.retro_run)();
@@ -315,17 +366,26 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        input.clear();
+        crate::libretro::set_joypad_buttons(0);
         drop(frame_tx);
         match render_thread.join() {
             Ok(result) => result?,
             Err(_) => return Err(io::Error::other("renderer thread panicked").into()),
         }
+        drop(terminal);
 
-        crate::libretro::AUDIO.lock().unwrap().take();
+        if let Ok(mut audio) = crate::libretro::AUDIO.lock() {
+            audio.take();
+        }
         audio_backend.stop();
 
         (core.retro_unload_game)();
         (core.retro_deinit)();
+
+        if let Some(error) = input_error {
+            return Err(error.into());
+        }
     }
 
     Ok(())

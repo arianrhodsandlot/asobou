@@ -48,6 +48,7 @@ pub struct InputState {
     keys: [KeyState; MAPPED_KEY_COUNT],
     quit_requested: bool,
     release_events_supported: bool,
+    failsafe_key: Option<usize>,
 }
 
 impl Default for InputState {
@@ -57,6 +58,7 @@ impl Default for InputState {
             keys: [KeyState::new(); MAPPED_KEY_COUNT],
             quit_requested: false,
             release_events_supported: false,
+            failsafe_key: None,
         }
     }
 }
@@ -90,17 +92,22 @@ impl InputState {
                 key.repeat_seen |= key.pressed;
                 key.pressed = true;
                 key.last_seen = Some(now);
+                self.failsafe_key = Some(binding.key);
             }
             KeyEventKind::Repeat => {
                 key.pressed = true;
                 key.repeat_seen = true;
                 key.last_seen = Some(now);
+                self.failsafe_key = Some(binding.key);
             }
             KeyEventKind::Release => {
                 key.pressed = false;
                 key.last_seen = None;
                 key.repeat_seen = false;
                 self.release_events_supported = true;
+                if self.failsafe_key == Some(binding.key) {
+                    self.failsafe_key = None;
+                }
             }
         }
 
@@ -108,14 +115,34 @@ impl InputState {
     }
 
     pub fn expire(&mut self, now: Instant) {
+        if self.release_events_supported {
+            if let Some(key_id) = self.failsafe_key {
+                let key = &mut self.keys[key_id];
+                let timeout = if key.repeat_seen {
+                    REPEAT_TIMEOUT
+                } else {
+                    RELEASE_EVENT_FAILSAFE
+                };
+                if key
+                    .last_seen
+                    .is_some_and(|last_seen| now.saturating_duration_since(last_seen) >= timeout)
+                {
+                    key.pressed = false;
+                    key.last_seen = None;
+                    key.repeat_seen = false;
+                    self.failsafe_key = None;
+                }
+            }
+            self.rebuild_buttons();
+            return;
+        }
+
         for key in &mut self.keys {
             if !key.pressed {
                 continue;
             }
             let timeout = if key.repeat_seen {
                 REPEAT_TIMEOUT
-            } else if self.release_events_supported {
-                RELEASE_EVENT_FAILSAFE
             } else {
                 INITIAL_HOLD_GRACE
             };
@@ -137,6 +164,7 @@ impl InputState {
             key.last_seen = None;
             key.repeat_seen = false;
         }
+        self.failsafe_key = None;
         self.buttons.fill(false);
     }
 
@@ -360,6 +388,31 @@ mod tests {
         state.handle_key(key(KeyCode::Char('x'), KeyEventKind::Press), now);
         state.expire(now + RELEASE_EVENT_FAILSAFE);
 
+        assert!(!pressed(&state, BUTTON_A));
+    }
+
+    #[test]
+    fn release_failsafe_preserves_other_held_keys() {
+        let now = Instant::now();
+        let mut state = InputState::with_release_events_supported(true);
+
+        state.handle_key(key(KeyCode::Right, KeyEventKind::Press), now);
+        state.handle_key(
+            key(KeyCode::Right, KeyEventKind::Repeat),
+            now + Duration::from_millis(100),
+        );
+        state.handle_key(
+            key(KeyCode::Char('x'), KeyEventKind::Press),
+            now + Duration::from_millis(200),
+        );
+        state.expire(now + Duration::from_millis(300));
+
+        assert!(pressed(&state, BUTTON_RIGHT));
+        assert!(pressed(&state, BUTTON_A));
+
+        state.expire(now + Duration::from_millis(850));
+
+        assert!(pressed(&state, BUTTON_RIGHT));
         assert!(!pressed(&state, BUTTON_A));
     }
 

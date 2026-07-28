@@ -387,7 +387,9 @@ pub unsafe fn load_rom(core: &Core, rom_path: &Path) -> Result<bool, Box<dyn std
 
     let ok = unsafe { (core.retro_load_game)(&game_info) };
     if !path_c.is_null() {
-        unsafe { drop(CString::from_raw(path_c as *mut c_char)); }
+        unsafe {
+            drop(CString::from_raw(path_c as *mut c_char));
+        }
     }
     drop(_temp_file);
     Ok(ok)

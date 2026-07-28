@@ -1,32 +1,49 @@
 use std::process::Command;
 
-fn run(args: &[&str]) -> (String, i32) {
+fn run(args: &[&str]) -> (String, String, i32) {
     let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
         .args(args)
         .output()
         .expect("failed to run asoby");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let code = output.status.code().unwrap_or(-1);
-    (stdout, code)
+    (stdout, stderr, code)
 }
 
 #[test]
-fn prints_arguments() {
-    let (out, code) = run(&["hello", "world"]);
+fn running_without_rom_shows_help() {
+    let (stdout, _stderr, code) = run(&[]);
     assert_eq!(code, 0);
-    assert_eq!(out.trim(), "hello world");
+    assert!(stdout.contains("Usage:"));
+    assert!(stdout.contains("asoby"));
 }
 
 #[test]
-fn no_newline_flag() {
-    let (out, code) = run(&["-n", "hello"]);
+fn core_list_shows_header() {
+    let (stdout, _stderr, code) = run(&["core", "list"]);
     assert_eq!(code, 0);
-    assert_eq!(out, "hello");
+    assert!(stdout.contains("CORE"));
+    assert!(stdout.contains("STATUS"));
 }
 
 #[test]
-fn empty_args_produces_blank_line() {
-    let (out, code) = run(&[]);
+fn core_install_unknown_core_fails() {
+    let (_stdout, stderr, code) = run(&["core", "install", "nonexistent_core"]);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("Unknown core"));
+}
+
+#[test]
+fn core_remove_unknown_core_is_noop() {
+    let (_stdout, stderr, code) = run(&["core", "remove", "nonexistent_core"]);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("Unknown core"));
+}
+
+#[test]
+fn core_remove_uninstalled_core_is_noop() {
+    let (_stdout, stderr, code) = run(&["core", "remove", "nestopia"]);
     assert_eq!(code, 0);
-    assert_eq!(out, "\n");
+    assert!(stderr.contains("not installed"));
 }

@@ -2,99 +2,13 @@ use crossterm::event::{
     self, DisableFocusChange, EnableFocusChange, Event, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-
-fn core_ext() -> &'static str {
-    match std::env::consts::OS {
-        "macos" => "dylib",
-        "linux" => "so",
-        "windows" => "dll",
-        _ => "so",
-    }
-}
-
-fn buildbot_base() -> Option<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => {
-            Some("https://buildbot.libretro.com/nightly/apple/osx/arm64/latest/")
-        }
-        ("macos", "x86_64") => {
-            Some("https://buildbot.libretro.com/nightly/apple/osx/x86_64/latest/")
-        }
-        ("linux", "aarch64") => Some("https://buildbot.libretro.com/nightly/linux/aarch64/latest/"),
-        ("linux", "x86_64") => Some("https://buildbot.libretro.com/nightly/linux/x86_64/latest/"),
-        ("windows", "x86") => Some("https://buildbot.libretro.com/nightly/windows/x86/latest/"),
-        ("windows", "x86_64") => {
-            Some("https://buildbot.libretro.com/nightly/windows/x86_64/latest/")
-        }
-        _ => None,
-    }
-}
-
-fn http_agent() -> ureq::Agent {
-    ureq::config::Config::builder()
-        .timeout_global(Some(Duration::from_secs(300)))
-        .build()
-        .into()
-}
-
-fn download_core(core_name: &str, cores_dir: &Path) -> Result<PathBuf, String> {
-    let base = buildbot_base()
-        .ok_or_else(|| "Auto-download not supported on this platform".to_string())?;
-    let ext = core_ext();
-    let url = format!("{base}{core_name}_libretro.{ext}.zip");
-    eprintln!("Downloading {core_name} core...");
-    eprintln!("  From: {url}");
-
-    let agent = http_agent();
-    let resp = agent
-        .get(&url)
-        .call()
-        .map_err(|e| format!("Download failed: {e}"))?;
-
-    if resp.status() != 200 {
-        return Err(format!(
-            "HTTP {} — core '{core_name}' not found on buildbot",
-            resp.status()
-        ));
-    }
-
-    let mut data = Vec::new();
-    resp.into_body()
-        .into_reader()
-        .read_to_end(&mut data)
-        .map_err(|e| format!("Read failed: {e}"))?;
-
-    let cursor = std::io::Cursor::new(data);
-    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid zip: {e}"))?;
-
-    for i in 0..archive.len() {
-        let mut file = archive
-            .by_index(i)
-            .map_err(|e| format!("Zip read error: {e}"))?;
-        let name = file.name().to_string();
-        if name.to_lowercase().ends_with(core_ext()) {
-            let fname = std::path::Path::new(&name)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or(name);
-            let out_path = cores_dir.join(&fname);
-            let mut out =
-                std::fs::File::create(&out_path).map_err(|e| format!("Cannot create file: {e}"))?;
-            std::io::copy(&mut file, &mut out).map_err(|e| format!("Extract failed: {e}"))?;
-            eprintln!("  Saved: {}", out_path.display());
-            return Ok(out_path);
-        }
-    }
-
-    Err(format!("No .{} file found in downloaded zip", core_ext()))
-}
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
@@ -159,50 +73,197 @@ impl LatestFrameMailbox {
     }
 }
 
-fn resolve_core(user_input: Option<&Path>, cores_dir: &Path, default_name: &str) -> PathBuf {
-    let input = match user_input {
-        Some(p) => p,
-        None => {
-            let path = cores_dir.join(format!("{default_name}_libretro.{}", core_ext()));
-            return path;
-        }
-    };
+fn prompt_yes(question: &str, default_yes: bool) -> bool {
+    if default_yes {
+        eprint!("{question} [Y/n] ");
+    } else {
+        eprint!("{question} [y/N] ");
+    }
+    let _ = std::io::stderr().flush();
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    if stdin.lock().read_line(&mut line).is_err() {
+        return default_yes;
+    }
+    let answer = line.trim().to_ascii_lowercase();
+    if answer.is_empty() {
+        return default_yes;
+    }
+    answer.starts_with('y')
+}
 
-    if input.exists() {
-        return input.to_path_buf();
+fn resolve_core(
+    user_input: Option<&str>,
+    cores_dir: &Path,
+    default_name: &str,
+    yes: bool,
+    no_download: bool,
+) -> Result<PathBuf, String> {
+    if let Some(input) = user_input {
+        let input_path = Path::new(input);
+
+        if input_path.exists() {
+            return Ok(input_path.to_path_buf());
+        }
+
+        let is_name = input_path.parent().is_none()
+            || input_path.parent() == Some(Path::new(""));
+
+        if is_name {
+            if let Some(core) = crate::cores::find_core(input) {
+                if !crate::cores::is_installed(core, cores_dir) {
+                    if no_download {
+                        return Err(format!(
+                            "Core '{}' is not installed and --no-download prevents automatic installation.\n\
+                             Install it manually with: asoby core install {}",
+                            core.name, core.name
+                        ));
+                    }
+                    let interactive = std::io::stdin().is_terminal();
+                    if !yes && !interactive {
+                        return Err(format!(
+                            "Core '{}' is not installed. Use --yes to install automatically, or --no-download to forbid network access.\n  Install target: {}",
+                            core.name, cores_dir.display()
+                        ));
+                    }
+                    if !yes && interactive {
+                        eprintln!(
+                            "The recommended core, {}, is not installed.",
+                            core.name
+                        );
+                        if !prompt_yes(
+                            &format!(
+                                "Install it from buildbot.libretro.com to {}?",
+                                cores_dir.display()
+                            ),
+                            true,
+                        ) {
+                            return Err("Core installation declined.".to_string());
+                        }
+                    }
+                    crate::cores::download_and_install(core, cores_dir, false)?;
+                }
+                return Ok(crate::cores::resolve_core_library_path(
+                    core.artifact,
+                    cores_dir,
+                ));
+            }
+
+            let candidate =
+                crate::cores::resolve_core_path(Some(input_path), cores_dir, default_name);
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+            return Err(format!(
+                "Unknown core: '{input}'. Use 'asoby core list' to see available cores."
+            ));
+        }
+
+        let candidate = crate::cores::resolve_core_path(Some(input_path), cores_dir, default_name);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+        return Err(format!("Core not found: {input}"));
     }
 
-    if input.parent().is_none() || input.parent() == Some(Path::new("")) {
-        let name = input.to_string_lossy();
+    // No --core provided: detect from ROM, then ensure installed
+    let detection = crate::cores::detect_rom(std::path::Path::new(default_name), None);
+    match detection {
+        crate::cores::Detection::Detected {
+            core_name,
+            system_name,
+        } => {
+            if core_name.is_empty() {
+                return Err("Could not detect system for this ROM. Use --core to specify a core.".to_string());
+            }
+            let core = crate::cores::find_core(core_name).unwrap();
+            eprintln!("Detected {system_name}");
 
-        let candidate = cores_dir.join(format!("{name}_libretro.{}", core_ext()));
-        if candidate.exists() {
-            return candidate;
+            if !crate::cores::is_installed(core, cores_dir) {
+                if no_download {
+                    return Err(format!(
+                        "Core '{}' is not installed and --no-download prevents automatic installation.\n\
+                         Install it manually with: asoby core install {}",
+                        core.name, core.name
+                    ));
+                }
+                let interactive = std::io::stdin().is_terminal();
+                if !yes && !interactive {
+                    return Err(format!(
+                        "Core '{}' is not installed. Use --yes to install automatically, or --no-download to forbid network access.\n  Install target: {}",
+                        core.name, cores_dir.display()
+                    ));
+                }
+                if !yes && interactive {
+                    eprintln!(
+                        "The recommended core, {}, is not installed.",
+                        core.name
+                    );
+                    if !prompt_yes(
+                        &format!(
+                            "Install it from buildbot.libretro.com to {}?",
+                            cores_dir.display()
+                        ),
+                        true,
+                    ) {
+                        return Err("Core installation declined.".to_string());
+                    }
+                }
+                crate::cores::download_and_install(core, cores_dir, false)?;
+            }
+            Ok(crate::cores::resolve_core_library_path(
+                core.artifact,
+                cores_dir,
+            ))
         }
-
-        if let Ok(entries) = std::fs::read_dir(cores_dir) {
-            for entry in entries.flatten() {
-                let fname = entry.file_name();
-                let fname = fname.to_string_lossy();
-                if fname.starts_with(&*name) {
-                    return entry.path();
+        crate::cores::Detection::Ambiguous { candidates } => {
+            let mut msg = format!("error: \"{default_name}\" could be a");
+            let names: Vec<_> = candidates.iter().map(|(sys, _)| *sys).collect();
+            match names.len() {
+                0 => {}
+                1 => {
+                    msg.push_str(&format!(" {} ROM", names[0]));
+                }
+                2 => {
+                    msg.push_str(&format!(" {} or {} ROM", names[0], names[1]));
+                }
+                _ => {
+                    let last = names.last().unwrap();
+                    let rest = &names[..names.len() - 1];
+                    for sys in rest {
+                        msg.push_str(&format!(" {},", sys));
+                    }
+                    msg.push_str(&format!(" or {} ROM", last));
                 }
             }
+            msg.push_str("\n\nSelect a core explicitly:\n");
+            for (_sys, core) in &candidates {
+                let rom_path = default_name;
+                msg.push_str(&format!("  asoby {rom_path} --core {core}\n"));
+            }
+            Err(msg)
         }
-
-        return candidate;
+        crate::cores::Detection::Unknown => {
+            let ext = std::path::Path::new(default_name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("unknown");
+            Err(format!(
+                "No known system uses the '.{ext}' extension. Use --core to specify a core explicitly."
+            ))
+        }
     }
-
-    input.to_path_buf()
 }
 
 pub struct RunConfig {
     pub renderer: String,
-    pub core: Option<PathBuf>,
+    pub core: Option<String>,
     pub render_fps: u32,
     pub keep_scrollback: bool,
     pub audio: String,
     pub rom: PathBuf,
+    pub yes: bool,
+    pub no_download: bool,
 }
 
 struct TerminalGuard {
@@ -249,36 +310,25 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
     RUNNING.store(true, Ordering::SeqCst);
     crate::libretro::set_joypad_buttons(0);
 
-    let data_home = std::env::var("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs::data_local_dir().unwrap());
-    let cores_dir = data_home.join("asoby").join("cores");
+    let cores_dir = crate::cores::cores_dir();
     std::fs::create_dir_all(&cores_dir).ok();
 
-    let core_name = crate::cores::for_rom(&config.rom);
-    let core_path = resolve_core(config.core.as_deref(), &cores_dir, core_name);
-
-    let core_path = if core_path.exists() {
-        core_path
-    } else if config.core.is_none() {
-        match download_core(core_name, &cores_dir) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("Error: {e}");
-                eprintln!(
-                    "  Place cores in {} or use -c to specify a path",
-                    cores_dir.display()
-                );
-                std::process::exit(1);
-            }
+    let core_path = match resolve_core(
+        config.core.as_deref(),
+        &cores_dir,
+        config.rom.to_string_lossy().as_ref(),
+        config.yes,
+        config.no_download,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            eprintln!(
+                "  Place cores in {} or use -c to specify a path",
+                cores_dir.display()
+            );
+            std::process::exit(1);
         }
-    } else {
-        eprintln!("Error: core not found: {}", core_path.display());
-        eprintln!(
-            "  Place cores in {} or use -c to specify a path",
-            cores_dir.display()
-        );
-        std::process::exit(1);
     };
 
     if !config.rom.exists() {

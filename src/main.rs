@@ -5,13 +5,16 @@ mod input;
 mod libretro;
 mod render;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use commands::run::RunConfig;
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "asoby", about = "Retro game emulator for the terminal")]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     #[arg(
         short = 'r',
         long = "renderer",
@@ -23,9 +26,9 @@ struct Args {
     #[arg(
         short = 'c',
         long = "core",
-        help = "Path to a libretro core (.dylib/.so/.dll)"
+        help = "Core name or path to a libretro core (.dylib/.so/.dll)"
     )]
-    core: Option<PathBuf>,
+    core: Option<String>,
 
     #[arg(
         long = "render-fps",
@@ -49,17 +52,77 @@ struct Args {
     )]
     audio: String,
 
+    #[arg(
+        short = 'y',
+        long = "yes",
+        help = "Automatically confirm prompts (install cores, remove cores)"
+    )]
+    yes: bool,
+
+    #[arg(
+        long = "no-download",
+        help = "Forbid automatic core downloads"
+    )]
+    no_download: bool,
+
     #[arg(help = "Path to the ROM file to load")]
     rom: Option<PathBuf>,
 }
 
+#[derive(Subcommand)]
+enum Command {
+    #[command(about = "Manage libretro cores")]
+    Core {
+        #[command(subcommand)]
+        action: CoreAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum CoreAction {
+    #[command(about = "List available and installed cores")]
+    List,
+    #[command(about = "Install a core from buildbot.libretro.com")]
+    Install {
+        name: String,
+    },
+    #[command(about = "Update installed cores from buildbot.libretro.com")]
+    Update {
+        name: Option<String>,
+    },
+    #[command(about = "Remove an installed managed core")]
+    Remove {
+        name: String,
+    },
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+
+    if let Some(Command::Core { action }) = args.command {
+        match action {
+            CoreAction::List => {
+                commands::core::list(args.yes, args.no_download);
+                return Ok(());
+            }
+            CoreAction::Install { name } => {
+                return commands::core::install(&name, args.yes, args.no_download);
+            }
+            CoreAction::Update { name } => {
+                return commands::core::update(name.as_deref(), args.yes, args.no_download);
+            }
+            CoreAction::Remove { name } => {
+                return commands::core::remove(&name, args.yes);
+            }
+        }
+    }
+
     let Some(rom) = args.rom else {
         let mut cmd = <Args as clap::CommandFactory>::command();
         cmd.print_help()?;
         return Ok(());
     };
+
     let config = RunConfig {
         renderer: args.renderer,
         core: args.core,
@@ -67,6 +130,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         keep_scrollback: args.keep_scrollback,
         audio: args.audio,
         rom,
+        yes: args.yes,
+        no_download: args.no_download,
     };
     commands::run::run(config)
 }

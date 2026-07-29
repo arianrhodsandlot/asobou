@@ -2,6 +2,7 @@ use super::Frame;
 use super::Renderer;
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use image::{DynamicImage, RgbImage};
+use std::ffi::OsStr;
 use std::io::{self, IsTerminal, Write};
 
 const ENTER_SCREEN: &[u8] = b"\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H";
@@ -22,6 +23,8 @@ impl ViuRenderer {
         Self {
             config: viuer::Config {
                 absolute_offset: !keep_scrollback,
+                use_kitty: false,
+                use_iterm: false,
                 ..Default::default()
             },
             use_alternate_screen: !keep_scrollback,
@@ -67,9 +70,13 @@ impl ViuRenderer {
 
     fn detect_kitty(&mut self) {
         self.kitty_streaming = self.use_alternate_screen
-            && self.config.use_kitty
             && io::stdout().is_terminal()
-            && viuer::get_kitty_support() != viuer::KittySupport::None;
+            && kitty_streaming_supported(
+                std::env::var_os("KITTY_WINDOW_ID").as_deref(),
+                std::env::var_os("TERM").as_deref(),
+                std::env::var_os("TERM_PROGRAM").as_deref(),
+                std::env::var_os("TERM_PROGRAM_VERSION").as_deref(),
+            );
     }
 
     fn render_kitty(&self, img: &DynamicImage, out: &mut dyn io::Write) -> io::Result<()> {
@@ -95,7 +102,7 @@ impl ViuRenderer {
                     more
                 )?;
             } else {
-                write!(command, "\x1b_Gm={more};")?;
+                write!(command, "\x1b_Gm={more},q=2;")?;
             }
             command.extend_from_slice(chunk);
             command.extend_from_slice(b"\x1b\\");
@@ -125,6 +132,51 @@ impl ViuRenderer {
         self.kitty_streaming = false;
         self.screen_active = false;
     }
+}
+
+fn kitty_streaming_supported(
+    kitty_window_id: Option<&OsStr>,
+    term: Option<&OsStr>,
+    term_program: Option<&OsStr>,
+    term_program_version: Option<&OsStr>,
+) -> bool {
+    if kitty_window_id.is_some_and(|value| !value.is_empty()) {
+        return true;
+    }
+
+    if term
+        .and_then(OsStr::to_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("xterm-kitty"))
+    {
+        return true;
+    }
+
+    let Some(term_program) = term_program.and_then(OsStr::to_str) else {
+        return false;
+    };
+    match term_program.to_ascii_lowercase().as_str() {
+        "ghostty" | "wezterm" | "zed" => true,
+        "iterm.app" | "iterm2" => term_program_version
+            .and_then(OsStr::to_str)
+            .is_some_and(iterm_supports_kitty_graphics),
+        _ => false,
+    }
+}
+
+fn iterm_supports_kitty_graphics(version: &str) -> bool {
+    let mut components = version.split('.').map(|component| {
+        component
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse::<u32>()
+            .unwrap_or_default()
+    });
+    (
+        components.next().unwrap_or_default(),
+        components.next().unwrap_or_default(),
+        components.next().unwrap_or_default(),
+    ) >= (3, 5, 5)
 }
 
 impl Renderer for ViuRenderer {
@@ -164,8 +216,9 @@ impl Drop for ViuRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{KITTY_IMAGE_ID, KITTY_PLACEMENT_ID, ViuRenderer};
+    use super::{KITTY_IMAGE_ID, KITTY_PLACEMENT_ID, ViuRenderer, kitty_streaming_supported};
     use image::{DynamicImage, Rgb, RgbImage};
+    use std::ffi::OsStr;
 
     #[test]
     fn kitty_stream_reuses_image_and_placement_ids() {
@@ -188,11 +241,96 @@ mod tests {
     }
 
     #[test]
+    fn kitty_stream_silences_every_image_chunk() {
+        let renderer = ViuRenderer::new(false);
+        let img = DynamicImage::ImageRgb8(RgbImage::from_fn(64, 64, |x, y| {
+            Rgb([x as u8, y as u8, (x ^ y) as u8])
+        }));
+        let mut output = Vec::new();
+
+        renderer.render_kitty(&img, &mut output).unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        let continuation_chunks = output
+            .match_indices("\x1b_Gm=")
+            .map(|(index, _)| &output[index..])
+            .collect::<Vec<_>>();
+        assert!(continuation_chunks.len() > 1);
+        assert!(continuation_chunks.iter().all(
+            |chunk| chunk.starts_with("\x1b_Gm=1,q=2;")
+                || chunk.starts_with("\x1b_Gm=0,q=2;")
+        ));
+    }
+
+    #[test]
     fn scrollback_mode_disables_streaming_protocols() {
         let renderer = ViuRenderer::new(true);
 
         assert!(!renderer.use_alternate_screen);
         assert!(!renderer.kitty_streaming);
         assert!(!renderer.config.absolute_offset);
+    }
+
+    #[test]
+    fn automatic_renderer_disables_viuer_protocol_backends() {
+        let renderer = ViuRenderer::new(false);
+
+        assert!(!renderer.config.use_kitty && !renderer.config.use_iterm);
+    }
+
+    #[test]
+    fn kitty_window_id_enables_streaming_without_a_probe() {
+        let supported = kitty_streaming_supported(
+            Some(OsStr::new("1")),
+            Some(OsStr::new("xterm-256color")),
+            None,
+            None,
+        );
+
+        assert!(supported);
+    }
+
+    #[test]
+    fn generic_terminal_does_not_enable_kitty_streaming() {
+        let supported =
+            kitty_streaming_supported(None, Some(OsStr::new("xterm-256color")), None, None);
+
+        assert!(!supported);
+    }
+
+    #[test]
+    fn zed_enables_kitty_streaming_without_a_probe() {
+        let supported = kitty_streaming_supported(
+            None,
+            Some(OsStr::new("xterm-256color")),
+            Some(OsStr::new("zed")),
+            None,
+        );
+
+        assert!(supported);
+    }
+
+    #[test]
+    fn recent_iterm_enables_kitty_streaming_without_a_probe() {
+        let supported = kitty_streaming_supported(
+            None,
+            Some(OsStr::new("xterm-256color")),
+            Some(OsStr::new("iTerm.app")),
+            Some(OsStr::new("3.6.5")),
+        );
+
+        assert!(supported);
+    }
+
+    #[test]
+    fn older_iterm_falls_back_without_requesting_file_display() {
+        let supported = kitty_streaming_supported(
+            None,
+            Some(OsStr::new("xterm-256color")),
+            Some(OsStr::new("iTerm.app")),
+            Some(OsStr::new("3.4.23")),
+        );
+
+        assert!(!supported);
     }
 }

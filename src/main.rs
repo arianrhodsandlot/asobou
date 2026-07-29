@@ -1,5 +1,6 @@
 mod audio;
 mod commands;
+mod config;
 mod cores;
 mod input;
 mod libretro;
@@ -123,6 +124,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
 
+    let input_bindings = match config::load_input_bindings() {
+        Ok(bindings) => bindings,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+    };
     let config = RunConfig {
         renderer: args.renderer,
         core: args.core,
@@ -132,6 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rom,
         yes: args.yes,
         no_download: args.no_download,
+        input_bindings,
     };
     commands::run::run(config)
 }

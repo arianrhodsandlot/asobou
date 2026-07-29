@@ -47,3 +47,21 @@ fn core_remove_uninstalled_core_is_noop() {
     assert_eq!(code, 0);
     assert!(stderr.contains("not installed"));
 }
+
+#[test]
+fn asoby_config_loads_the_explicit_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("custom.toml");
+    std::fs::write(&config, "[input\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
+        .env("ASOBY_CONFIG", config)
+        .arg("missing.rom")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("failed to parse config"),
+        "unexpected stderr: {stderr}"
+    );
+}

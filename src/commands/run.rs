@@ -264,6 +264,7 @@ pub struct RunConfig {
     pub rom: PathBuf,
     pub yes: bool,
     pub no_download: bool,
+    pub input_bindings: crate::input::InputBindings,
 }
 
 struct TerminalGuard {
@@ -384,17 +385,19 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         renderer.setup(w, h);
 
         let terminal = TerminalGuard::enter()?;
+        let status = config.input_bindings.status_line();
+        let input_bindings = config.input_bindings;
         let frame_mailbox = Arc::new(LatestFrameMailbox::new());
         let render_mailbox = Arc::clone(&frame_mailbox);
         let render_thread = thread::spawn(move || -> io::Result<()> {
             let mut renderer = renderer;
             let mut stdout = io::stdout().lock();
-            let status = "Press Q, Esc, or ctrl+c to exit  |  ctrl+r resets stuck input";
             let result = (|| {
                 while let Some(frame) = render_mailbox.receive() {
                     renderer.render(&frame, &mut stdout)?;
-                    let (_, rows) = crossterm::terminal::size()?;
-                    write!(stdout, "\x1b[{};1H\x1b[K{status}", rows)?;
+                    let (columns, rows) = crossterm::terminal::size()?;
+                    let width = usize::from(columns);
+                    write!(stdout, "\x1b[{};1H\x1b[K{status:.width$}", rows)?;
                     stdout.flush()?;
                 }
                 Ok(())
@@ -415,7 +418,8 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         let schedule_start = Instant::now();
         let mut next_frame = schedule_start;
         let mut next_render = schedule_start;
-        let mut input = crate::input::InputState::with_release_events_supported(
+        let mut input = crate::input::InputState::with_bindings(
+            input_bindings,
             terminal.release_events_supported,
         );
         let mut input_error = None;

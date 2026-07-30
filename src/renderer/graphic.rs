@@ -96,8 +96,8 @@ impl GraphicRenderer {
     }
 }
 
-pub fn supported(keep_scrollback: bool) -> bool {
-    !keep_scrollback
+pub fn supported(no_alt_screen: bool) -> bool {
+    !no_alt_screen
         && io::stdout().is_terminal()
         && kitty_supported(
             std::env::var_os("KITTY_WINDOW_ID").as_deref(),

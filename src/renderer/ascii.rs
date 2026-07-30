@@ -10,9 +10,9 @@ pub struct AsciiRenderer {
 }
 
 impl AsciiRenderer {
-    pub fn new(keep_scrollback: bool) -> Self {
+    pub fn new(no_alt_screen: bool) -> Self {
         Self {
-            use_alternate_screen: !keep_scrollback,
+            use_alternate_screen: !no_alt_screen,
             screen_active: false,
         }
     }

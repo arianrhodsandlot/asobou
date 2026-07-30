@@ -27,6 +27,27 @@ fn help_lists_graphic_renderer() {
 }
 
 #[test]
+fn help_lists_no_alt_screen() {
+    let (stdout, _stderr, _code) = run(&[]);
+
+    assert!(stdout.contains("--no-alt-screen"));
+}
+
+#[test]
+fn help_hides_keep_scrollback_alias() {
+    let (stdout, _stderr, _code) = run(&[]);
+
+    assert!(!stdout.contains("--keep-scrollback"));
+}
+
+#[test]
+fn keep_scrollback_alias_is_accepted() {
+    let (_stdout, _stderr, code) = run(&["--keep-scrollback"]);
+
+    assert_eq!(code, 0);
+}
+
+#[test]
 fn core_list_shows_header() {
     let (stdout, _stderr, code) = run(&["core", "list"]);
     assert_eq!(code, 0);

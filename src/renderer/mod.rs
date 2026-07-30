@@ -30,9 +30,9 @@ pub trait Renderer: Send {
 pub fn create(
     mode: RendererMode,
     rom_path: &std::path::Path,
-    keep_scrollback: bool,
+    no_alt_screen: bool,
 ) -> io::Result<Box<dyn Renderer>> {
-    match resolve_mode(mode, graphic::supported(keep_scrollback))? {
+    match resolve_mode(mode, graphic::supported(no_alt_screen))? {
         RendererMode::Debug => {
             let stem = rom_path
                 .file_stem()
@@ -41,8 +41,8 @@ pub fn create(
             Ok(Box::new(debug::DebugRenderer::new(stem)))
         }
         RendererMode::Graphic => Ok(Box::new(graphic::GraphicRenderer::new())),
-        RendererMode::Block => Ok(Box::new(block::BlockRenderer::new(keep_scrollback))),
-        RendererMode::Ascii => Ok(Box::new(ascii::AsciiRenderer::new(keep_scrollback))),
+        RendererMode::Block => Ok(Box::new(block::BlockRenderer::new(no_alt_screen))),
+        RendererMode::Ascii => Ok(Box::new(ascii::AsciiRenderer::new(no_alt_screen))),
         RendererMode::Auto => unreachable!(),
     }
 }

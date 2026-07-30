@@ -42,10 +42,11 @@ struct Args {
     render_fps: u32,
 
     #[arg(
-        long = "keep-scrollback",
-        help = "Append rendered frames to normal terminal scrollback"
+        long = "no-alt-screen",
+        alias = "keep-scrollback",
+        help = "Render in the primary terminal buffer, leaving the final frame visible on exit"
     )]
-    keep_scrollback: bool,
+    no_alt_screen: bool,
 
     #[arg(
         short = 'a',
@@ -137,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         renderer: args.renderer,
         core: args.core,
         render_fps: args.render_fps,
-        keep_scrollback: args.keep_scrollback,
+        no_alt_screen: args.no_alt_screen,
         audio: args.audio,
         rom,
         yes: args.yes,

@@ -11,6 +11,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
+const TERMINAL_INPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
+const TERMINAL_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 struct LatestFrameMailbox {
     state: Mutex<LatestFrameState>,
@@ -259,7 +261,7 @@ pub struct RunConfig {
     pub renderer: crate::renderer::RendererMode,
     pub core: Option<String>,
     pub render_fps: u32,
-    pub keep_scrollback: bool,
+    pub no_alt_screen: bool,
     pub audio: String,
     pub rom: PathBuf,
     pub yes: bool,
@@ -302,7 +304,26 @@ impl Drop for TerminalGuard {
         if self.focus_enabled {
             let _ = crossterm::execute!(stdout, DisableFocusChange);
         }
+        let _ = stdout.flush();
+        if self.enhanced_keyboard_enabled {
+            drain_pending_terminal_events();
+        }
         let _ = crossterm::terminal::disable_raw_mode();
+    }
+}
+
+fn drain_pending_terminal_events() {
+    let deadline = Instant::now() + TERMINAL_INPUT_DRAIN_TIMEOUT;
+    while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+        match event::poll(remaining.min(TERMINAL_INPUT_POLL_INTERVAL)) {
+            Ok(true) => {
+                if event::read().is_err() {
+                    break;
+                }
+            }
+            Ok(false) => {}
+            Err(_) => break,
+        }
     }
 }
 
@@ -337,7 +358,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    let renderer = crate::renderer::create(config.renderer, &config.rom, config.keep_scrollback)?;
+    let renderer = crate::renderer::create(config.renderer, &config.rom, config.no_alt_screen)?;
     let core = unsafe { crate::libretro::load_core(&core_path)? };
     let mut audio_backend = crate::audio::create(&config.audio);
     let target_sample_rate = match audio_backend.preferred_sample_rate() {

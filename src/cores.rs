@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -63,7 +63,6 @@ struct Signature {
 // ── Systems registry ───────────────────────────────────────────────────────
 
 struct System {
-    name: &'static str,
     extensions: &'static [&'static str],
     signatures: &'static [Signature],
     recommended_core: &'static str,
@@ -72,7 +71,6 @@ struct System {
 static SYSTEMS: LazyLock<Vec<System>> = LazyLock::new(|| {
     vec![
         System {
-            name: "Nintendo Entertainment System",
             extensions: &["nes", "fds", "unf", "unif"],
             signatures: &[Signature {
                 offset: 0,
@@ -81,13 +79,11 @@ static SYSTEMS: LazyLock<Vec<System>> = LazyLock::new(|| {
             recommended_core: "nestopia",
         },
         System {
-            name: "Super Nintendo Entertainment System",
             extensions: &["sfc", "smc"],
             signatures: &[],
             recommended_core: "snes9x",
         },
         System {
-            name: "Sega Genesis / Mega Drive",
             extensions: &["gen", "md", "smd", "sg", "bin"],
             signatures: &[Signature {
                 offset: 0x100,
@@ -96,49 +92,41 @@ static SYSTEMS: LazyLock<Vec<System>> = LazyLock::new(|| {
             recommended_core: "genesis_plus_gx",
         },
         System {
-            name: "Sega Master System",
             extensions: &["sms"],
             signatures: &[],
             recommended_core: "genesis_plus_gx",
         },
         System {
-            name: "Sega Game Gear",
             extensions: &["gg"],
             signatures: &[],
             recommended_core: "genesis_plus_gx",
         },
         System {
-            name: "Sega 32X",
             extensions: &["32x"],
             signatures: &[],
             recommended_core: "picodrive",
         },
         System {
-            name: "Nintendo Game Boy",
             extensions: &["gb"],
             signatures: &[],
             recommended_core: "mgba",
         },
         System {
-            name: "Nintendo Game Boy Color",
             extensions: &["gbc"],
             signatures: &[],
             recommended_core: "mgba",
         },
         System {
-            name: "Nintendo Game Boy Advance",
             extensions: &["gba"],
             signatures: &[],
             recommended_core: "mgba",
         },
         System {
-            name: "Atari 2600",
             extensions: &["a26", "bin"],
             signatures: &[],
             recommended_core: "stella",
         },
         System {
-            name: "Atari 5200",
             extensions: &["a52"],
             signatures: &[],
             recommended_core: "a5200",
@@ -151,7 +139,6 @@ static SYSTEMS: LazyLock<Vec<System>> = LazyLock::new(|| {
 pub struct CoreEntry {
     pub name: &'static str,
     pub artifact: &'static str,
-    pub systems: &'static [&'static str],
 }
 
 static CORES: LazyLock<Vec<CoreEntry>> = LazyLock::new(|| {
@@ -159,45 +146,30 @@ static CORES: LazyLock<Vec<CoreEntry>> = LazyLock::new(|| {
         CoreEntry {
             name: "nestopia",
             artifact: "nestopia",
-            systems: &["Nintendo Entertainment System"],
         },
         CoreEntry {
             name: "snes9x",
             artifact: "snes9x",
-            systems: &["Super Nintendo Entertainment System"],
         },
         CoreEntry {
             name: "genesis_plus_gx",
             artifact: "genesis_plus_gx",
-            systems: &[
-                "Sega Genesis / Mega Drive",
-                "Sega Master System",
-                "Sega Game Gear",
-            ],
         },
         CoreEntry {
             name: "picodrive",
             artifact: "picodrive",
-            systems: &["Sega 32X"],
         },
         CoreEntry {
             name: "mgba",
             artifact: "mgba",
-            systems: &[
-                "Nintendo Game Boy",
-                "Nintendo Game Boy Color",
-                "Nintendo Game Boy Advance",
-            ],
         },
         CoreEntry {
             name: "stella",
             artifact: "stella",
-            systems: &["Atari 2600"],
         },
         CoreEntry {
             name: "a5200",
             artifact: "a5200",
-            systems: &["Atari 5200"],
         },
     ]
 });
@@ -221,13 +193,8 @@ pub fn installed_cores(dir: &Path) -> Vec<&'static CoreEntry> {
 // ── ROM detection ──────────────────────────────────────────────────────────
 
 pub enum Detection {
-    Detected {
-        core_name: &'static str,
-        system_name: &'static str,
-    },
-    Ambiguous {
-        candidates: Vec<(&'static str, &'static str)>, // (system_name, core_name)
-    },
+    Detected { core_name: &'static str },
+    Ambiguous { candidates: Vec<&'static str> },
     Unknown,
 }
 
@@ -236,13 +203,9 @@ pub fn detect_rom(rom_path: &Path, explicit_core: Option<&str>) -> Detection {
         if let Some(core) = find_core(core_name) {
             return Detection::Detected {
                 core_name: core.name,
-                system_name: core.systems.first().unwrap_or(&"Unknown"),
             };
         }
-        return Detection::Detected {
-            core_name: "",
-            system_name: "Unknown",
-        };
+        return Detection::Detected { core_name: "" };
     }
 
     let ext = rom_path
@@ -282,47 +245,26 @@ fn detect_by_signature(rom_path: &Path) -> Option<Detection> {
         }
     }
 
-    match matched.len() {
-        0 => None,
-        1 => {
-            let sys = matched[0];
-            Some(Detection::Detected {
-                core_name: sys.recommended_core,
-                system_name: sys.name,
-            })
-        }
-        _ => {
-            let candidates: Vec<_> = matched
+    if matched.is_empty() {
+        None
+    } else {
+        Some(detection_from_candidates(
+            matched
                 .iter()
-                .map(|s| (s.name, s.recommended_core))
-                .collect();
-            Some(Detection::Ambiguous { candidates })
-        }
+                .map(|system| system.recommended_core)
+                .collect(),
+        ))
     }
 }
 
 fn detect_by_extension(ext: &str) -> Detection {
-    let matched: Vec<&System> = SYSTEMS
+    let candidates = SYSTEMS
         .iter()
         .filter(|s| s.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)))
+        .map(|system| system.recommended_core)
         .collect();
 
-    match matched.len() {
-        0 => Detection::Unknown,
-        1 => Detection::Detected {
-            core_name: matched[0].recommended_core,
-            system_name: matched[0].name,
-        },
-        _ => {
-            // For generic extensions like .bin, force an ambiguity error
-            // even though signature detection ran first and found nothing.
-            let candidates: Vec<_> = matched
-                .iter()
-                .map(|s| (s.name, s.recommended_core))
-                .collect();
-            Detection::Ambiguous { candidates }
-        }
-    }
+    detection_from_candidates(candidates)
 }
 
 fn detect_zip(rom_path: &Path) -> Detection {
@@ -335,7 +277,7 @@ fn detect_zip(rom_path: &Path) -> Detection {
         Err(_) => return Detection::Unknown,
     };
 
-    let mut matched: BTreeMap<&'static str, &'static str> = BTreeMap::new();
+    let mut matched = BTreeSet::new();
 
     for i in 0..archive.len() {
         let entry = match archive.by_index(i) {
@@ -354,25 +296,23 @@ fn detect_zip(rom_path: &Path) -> Detection {
         if let Some(ref ext) = entry_ext {
             for system in SYSTEMS.iter() {
                 if system.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
-                    matched.entry(system.name).or_insert(system.recommended_core);
+                    matched.insert(system.recommended_core);
                 }
             }
         }
     }
 
-    match matched.len() {
-        0 => Detection::Unknown,
-        1 => {
-            let (sys, core) = matched.into_iter().next().unwrap();
-            Detection::Detected {
-                core_name: core,
-                system_name: sys,
-            }
-        }
-        _ => {
-            let candidates: Vec<_> = matched.into_iter().collect();
-            Detection::Ambiguous { candidates }
-        }
+    detection_from_candidates(matched)
+}
+
+fn detection_from_candidates(candidates: BTreeSet<&'static str>) -> Detection {
+    let candidates: Vec<_> = candidates.into_iter().collect();
+    match candidates.as_slice() {
+        [] => Detection::Unknown,
+        [core_name] => Detection::Detected {
+            core_name: *core_name,
+        },
+        _ => Detection::Ambiguous { candidates },
     }
 }
 
@@ -568,4 +508,27 @@ pub fn remove_core_file(core: &CoreEntry, dir: &Path) -> Result<(), String> {
         fs::remove_file(&path).map_err(|e| format!("Failed to remove core: {e}"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Detection, detect_by_extension};
+
+    #[test]
+    fn nes_extension_selects_nestopia() {
+        let Detection::Detected { core_name } = detect_by_extension("nes") else {
+            panic!("expected a detected core");
+        };
+
+        assert_eq!(core_name, "nestopia");
+    }
+
+    #[test]
+    fn bin_extension_returns_core_candidates() {
+        let Detection::Ambiguous { candidates } = detect_by_extension("bin") else {
+            panic!("expected ambiguous core candidates");
+        };
+
+        assert_eq!(candidates, vec!["genesis_plus_gx", "stella"]);
+    }
 }

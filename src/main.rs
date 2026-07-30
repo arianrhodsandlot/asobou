@@ -34,40 +34,21 @@ struct Args {
     core: Option<String>,
 
     #[arg(
-        long = "render-fps",
+        long = "fps",
         default_value_t = 60,
         value_parser = clap::value_parser!(u32).range(1..=240),
         help = "Maximum terminal refresh rate"
     )]
-    render_fps: u32,
+    fps: u32,
 
     #[arg(
         long = "no-alt-screen",
-        alias = "keep-scrollback",
         help = "Render in the primary terminal buffer, leaving the final frame visible on exit"
     )]
     no_alt_screen: bool,
 
-    #[arg(
-        short = 'a',
-        long = "audio",
-        default_value = "cpal",
-        help = "Audio backend (cpal, null)"
-    )]
-    audio: String,
-
-    #[arg(
-        short = 'y',
-        long = "yes",
-        help = "Automatically confirm prompts (install cores, remove cores)"
-    )]
-    yes: bool,
-
-    #[arg(
-        long = "no-download",
-        help = "Forbid automatic core downloads"
-    )]
-    no_download: bool,
+    #[arg(long = "no-audio", help = "Disable game audio")]
+    no_audio: bool,
 
     #[arg(help = "Path to the ROM file to load")]
     rom: Option<PathBuf>,
@@ -106,17 +87,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(Command::Core { action }) = args.command {
         match action {
             CoreAction::List => {
-                commands::core::list(args.yes, args.no_download);
+                commands::core::list();
                 return Ok(());
             }
             CoreAction::Install { name } => {
-                return commands::core::install(&name, args.yes, args.no_download);
+                return commands::core::install(&name);
             }
             CoreAction::Update { name } => {
-                return commands::core::update(name.as_deref(), args.yes, args.no_download);
+                return commands::core::update(name.as_deref());
             }
             CoreAction::Remove { name } => {
-                return commands::core::remove(&name, args.yes);
+                return commands::core::remove(&name);
             }
         }
     }
@@ -137,12 +118,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = RunConfig {
         renderer: args.renderer,
         core: args.core,
-        render_fps: args.render_fps,
+        render_fps: args.fps,
         no_alt_screen: args.no_alt_screen,
-        audio: args.audio,
+        muted: args.no_audio,
         rom,
-        yes: args.yes,
-        no_download: args.no_download,
         input_bindings,
     };
     commands::run::run(config)

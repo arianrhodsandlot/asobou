@@ -2,7 +2,7 @@ use crossterm::event::{
     self, DisableFocusChange, EnableFocusChange, Event, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, Write};
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -75,31 +75,10 @@ impl LatestFrameMailbox {
     }
 }
 
-fn prompt_yes(question: &str, default_yes: bool) -> bool {
-    if default_yes {
-        eprint!("{question} [Y/n] ");
-    } else {
-        eprint!("{question} [y/N] ");
-    }
-    let _ = std::io::stderr().flush();
-    let stdin = std::io::stdin();
-    let mut line = String::new();
-    if stdin.lock().read_line(&mut line).is_err() {
-        return default_yes;
-    }
-    let answer = line.trim().to_ascii_lowercase();
-    if answer.is_empty() {
-        return default_yes;
-    }
-    answer.starts_with('y')
-}
-
 fn resolve_core(
     user_input: Option<&str>,
     cores_dir: &Path,
     default_name: &str,
-    yes: bool,
-    no_download: bool,
 ) -> Result<PathBuf, String> {
     if let Some(input) = user_input {
         let input_path = Path::new(input);
@@ -114,35 +93,6 @@ fn resolve_core(
         if is_name {
             if let Some(core) = crate::cores::find_core(input) {
                 if !crate::cores::is_installed(core, cores_dir) {
-                    if no_download {
-                        return Err(format!(
-                            "Core '{}' is not installed and --no-download prevents automatic installation.\n\
-                             Install it manually with: asoby core install {}",
-                            core.name, core.name
-                        ));
-                    }
-                    let interactive = std::io::stdin().is_terminal();
-                    if !yes && !interactive {
-                        return Err(format!(
-                            "Core '{}' is not installed. Use --yes to install automatically, or --no-download to forbid network access.\n  Install target: {}",
-                            core.name, cores_dir.display()
-                        ));
-                    }
-                    if !yes && interactive {
-                        eprintln!(
-                            "The recommended core, {}, is not installed.",
-                            core.name
-                        );
-                        if !prompt_yes(
-                            &format!(
-                                "Install it from buildbot.libretro.com to {}?",
-                                cores_dir.display()
-                            ),
-                            true,
-                        ) {
-                            return Err("Core installation declined.".to_string());
-                        }
-                    }
                     crate::cores::download_and_install(core, cores_dir, false)?;
                 }
                 return Ok(crate::cores::resolve_core_library_path(
@@ -171,46 +121,13 @@ fn resolve_core(
     // No --core provided: detect from ROM, then ensure installed
     let detection = crate::cores::detect_rom(std::path::Path::new(default_name), None);
     match detection {
-        crate::cores::Detection::Detected {
-            core_name,
-            system_name,
-        } => {
+        crate::cores::Detection::Detected { core_name } => {
             if core_name.is_empty() {
                 return Err("Could not detect system for this ROM. Use --core to specify a core.".to_string());
             }
             let core = crate::cores::find_core(core_name).unwrap();
-            eprintln!("Detected {system_name}");
 
             if !crate::cores::is_installed(core, cores_dir) {
-                if no_download {
-                    return Err(format!(
-                        "Core '{}' is not installed and --no-download prevents automatic installation.\n\
-                         Install it manually with: asoby core install {}",
-                        core.name, core.name
-                    ));
-                }
-                let interactive = std::io::stdin().is_terminal();
-                if !yes && !interactive {
-                    return Err(format!(
-                        "Core '{}' is not installed. Use --yes to install automatically, or --no-download to forbid network access.\n  Install target: {}",
-                        core.name, cores_dir.display()
-                    ));
-                }
-                if !yes && interactive {
-                    eprintln!(
-                        "The recommended core, {}, is not installed.",
-                        core.name
-                    );
-                    if !prompt_yes(
-                        &format!(
-                            "Install it from buildbot.libretro.com to {}?",
-                            cores_dir.display()
-                        ),
-                        true,
-                    ) {
-                        return Err("Core installation declined.".to_string());
-                    }
-                }
                 crate::cores::download_and_install(core, cores_dir, false)?;
             }
             Ok(crate::cores::resolve_core_library_path(
@@ -219,27 +136,9 @@ fn resolve_core(
             ))
         }
         crate::cores::Detection::Ambiguous { candidates } => {
-            let mut msg = format!("error: \"{default_name}\" could be a");
-            let names: Vec<_> = candidates.iter().map(|(sys, _)| *sys).collect();
-            match names.len() {
-                0 => {}
-                1 => {
-                    msg.push_str(&format!(" {} ROM", names[0]));
-                }
-                2 => {
-                    msg.push_str(&format!(" {} or {} ROM", names[0], names[1]));
-                }
-                _ => {
-                    let last = names.last().unwrap();
-                    let rest = &names[..names.len() - 1];
-                    for sys in rest {
-                        msg.push_str(&format!(" {},", sys));
-                    }
-                    msg.push_str(&format!(" or {} ROM", last));
-                }
-            }
-            msg.push_str("\n\nSelect a core explicitly:\n");
-            for (_sys, core) in &candidates {
+            let mut msg =
+                format!("Multiple cores support \"{default_name}\".\n\nSelect one explicitly:\n");
+            for core in &candidates {
                 let rom_path = default_name;
                 msg.push_str(&format!("  asoby {rom_path} --core {core}\n"));
             }
@@ -262,10 +161,8 @@ pub struct RunConfig {
     pub core: Option<String>,
     pub render_fps: u32,
     pub no_alt_screen: bool,
-    pub audio: String,
+    pub muted: bool,
     pub rom: PathBuf,
-    pub yes: bool,
-    pub no_download: bool,
     pub input_bindings: crate::input::InputBindings,
 }
 
@@ -339,8 +236,6 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         config.core.as_deref(),
         &cores_dir,
         config.rom.to_string_lossy().as_ref(),
-        config.yes,
-        config.no_download,
     ) {
         Ok(p) => p,
         Err(e) => {
@@ -360,12 +255,16 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     let renderer = crate::renderer::create(config.renderer, &config.rom, config.no_alt_screen)?;
     let core = unsafe { crate::libretro::load_core(&core_path)? };
-    let mut audio_backend = crate::audio::create(&config.audio);
+    let mut audio_backend = if config.muted {
+        crate::audio::muted()
+    } else {
+        crate::audio::output()
+    };
     let target_sample_rate = match audio_backend.preferred_sample_rate() {
         Ok(sample_rate) => sample_rate,
         Err(e) => {
             eprintln!("Audio device unavailable: {e}, falling back to null");
-            audio_backend = crate::audio::create("null");
+            audio_backend = crate::audio::muted();
             None
         }
     };
@@ -395,7 +294,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             Ok(sink) => sink,
             Err(e) => {
                 eprintln!("Audio init failed: {e}, falling back to null");
-                audio_backend = crate::audio::create("null");
+                audio_backend = crate::audio::muted();
                 audio_backend.start(av_info.timing.sample_rate)?
             }
         };

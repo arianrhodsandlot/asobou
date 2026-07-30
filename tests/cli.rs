@@ -34,17 +34,17 @@ fn help_lists_no_alt_screen() {
 }
 
 #[test]
-fn help_hides_keep_scrollback_alias() {
+fn help_lists_fps() {
     let (stdout, _stderr, _code) = run(&[]);
 
-    assert!(!stdout.contains("--keep-scrollback"));
+    assert!(stdout.contains("--fps"));
 }
 
 #[test]
-fn keep_scrollback_alias_is_accepted() {
-    let (_stdout, _stderr, code) = run(&["--keep-scrollback"]);
+fn help_lists_no_audio() {
+    let (stdout, _stderr, _code) = run(&[]);
 
-    assert_eq!(code, 0);
+    assert!(stdout.contains("--no-audio"));
 }
 
 #[test]

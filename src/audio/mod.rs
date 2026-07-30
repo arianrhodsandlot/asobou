@@ -11,9 +11,10 @@ pub trait AudioBackend {
     fn stop(&mut self);
 }
 
-pub fn create(name: &str) -> Box<dyn AudioBackend> {
-    match name {
-        "cpal" => Box::new(cpal::CpalBackend::new()),
-        _ => Box::new(null::NullBackend),
-    }
+pub fn output() -> Box<dyn AudioBackend> {
+    Box::new(cpal::CpalBackend::new())
+}
+
+pub fn muted() -> Box<dyn AudioBackend> {
+    Box::new(null::NullBackend)
 }

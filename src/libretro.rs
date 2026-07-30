@@ -1,5 +1,5 @@
 use crate::audio::AudioSink;
-use crate::render::Frame;
+use crate::renderer::Frame;
 use libc::{c_char, c_int, c_uint, c_void};
 use libloading::Library;
 use std::ffi::CString;
@@ -445,7 +445,7 @@ mod tests {
         FRAME, PIXEL_FORMAT, PixelFormat, convert_frame, convert_row, joypad_button_value,
         set_video_capture_enabled, video_refresh,
     };
-    use crate::render::Frame;
+    use crate::renderer::Frame;
     use libc::c_void;
     use std::sync::Arc;
     use std::sync::atomic::Ordering;

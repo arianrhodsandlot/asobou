@@ -1,5 +1,4 @@
-use super::Frame;
-use super::Renderer;
+use super::{Frame, Renderer};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use image::{DynamicImage, RgbImage};
 use std::ffi::OsStr;
@@ -11,38 +10,15 @@ const KITTY_IMAGE_ID: u32 = 0xa50b_0001;
 const KITTY_PLACEMENT_ID: u32 = 1;
 const KITTY_CHUNK_SIZE: usize = 4096;
 
-pub struct ViuRenderer {
+pub struct GraphicRenderer {
     config: viuer::Config,
-    use_alternate_screen: bool,
-    kitty_streaming: bool,
     screen_active: bool,
 }
 
-impl ViuRenderer {
-    pub fn new(keep_scrollback: bool) -> Self {
+impl GraphicRenderer {
+    pub fn new() -> Self {
         Self {
-            config: viuer::Config {
-                absolute_offset: !keep_scrollback,
-                use_kitty: false,
-                use_iterm: false,
-                ..Default::default()
-            },
-            use_alternate_screen: !keep_scrollback,
-            kitty_streaming: false,
-            screen_active: false,
-        }
-    }
-
-    pub fn halfblock(keep_scrollback: bool) -> Self {
-        Self {
-            config: viuer::Config {
-                absolute_offset: !keep_scrollback,
-                use_kitty: false,
-                use_iterm: false,
-                ..Default::default()
-            },
-            use_alternate_screen: !keep_scrollback,
-            kitty_streaming: false,
+            config: viuer::Config::default(),
             screen_active: false,
         }
     }
@@ -54,7 +30,7 @@ impl ViuRenderer {
     }
 
     fn enter_screen(&mut self) {
-        if !self.use_alternate_screen || self.screen_active || !io::stdout().is_terminal() {
+        if self.screen_active || !io::stdout().is_terminal() {
             return;
         }
 
@@ -66,17 +42,6 @@ impl ViuRenderer {
         {
             self.screen_active = true;
         }
-    }
-
-    fn detect_kitty(&mut self) {
-        self.kitty_streaming = self.use_alternate_screen
-            && io::stdout().is_terminal()
-            && kitty_streaming_supported(
-                std::env::var_os("KITTY_WINDOW_ID").as_deref(),
-                std::env::var_os("TERM").as_deref(),
-                std::env::var_os("TERM_PROGRAM").as_deref(),
-                std::env::var_os("TERM_PROGRAM_VERSION").as_deref(),
-            );
     }
 
     fn render_kitty(&self, img: &DynamicImage, out: &mut dyn io::Write) -> io::Result<()> {
@@ -125,16 +90,24 @@ impl ViuRenderer {
         }
 
         let mut stdout = io::stdout().lock();
-        if self.kitty_streaming {
-            let _ = write!(stdout, "\x1b_Ga=d,d=I,i={},q=2;\x1b\\", KITTY_IMAGE_ID);
-        }
+        let _ = write!(stdout, "\x1b_Ga=d,d=I,i={},q=2;\x1b\\", KITTY_IMAGE_ID);
         let _ = stdout.write_all(LEAVE_SCREEN).and_then(|_| stdout.flush());
-        self.kitty_streaming = false;
         self.screen_active = false;
     }
 }
 
-fn kitty_streaming_supported(
+pub fn supported(keep_scrollback: bool) -> bool {
+    !keep_scrollback
+        && io::stdout().is_terminal()
+        && kitty_supported(
+            std::env::var_os("KITTY_WINDOW_ID").as_deref(),
+            std::env::var_os("TERM").as_deref(),
+            std::env::var_os("TERM_PROGRAM").as_deref(),
+            std::env::var_os("TERM_PROGRAM_VERSION").as_deref(),
+        )
+}
+
+fn kitty_supported(
     kitty_window_id: Option<&OsStr>,
     term: Option<&OsStr>,
     term_program: Option<&OsStr>,
@@ -179,28 +152,13 @@ fn iterm_supports_kitty_graphics(version: &str) -> bool {
     ) >= (3, 5, 5)
 }
 
-impl Renderer for ViuRenderer {
+impl Renderer for GraphicRenderer {
     fn setup(&mut self, _src_width: u32, _src_height: u32) {
-        self.detect_kitty();
         self.enter_screen();
     }
 
     fn render(&mut self, frame: &Frame, out: &mut dyn io::Write) -> io::Result<()> {
-        let img = Self::frame_to_image(frame);
-        if self.kitty_streaming {
-            self.render_kitty(&img, out)
-        } else {
-            if self.config.absolute_offset {
-                if let Ok((tw, th)) = crossterm::terminal::size() {
-                    let resized = viuer::resize(&img, self.config.width, self.config.height);
-                    let rows = resized.height().div_ceil(2);
-                    self.config.x = tw.saturating_sub(resized.width() as u16) / 2;
-                    self.config.y = (th.saturating_sub(rows as u16) / 2) as i16;
-                }
-            }
-            let _ = viuer::print(&img, &self.config);
-            Ok(())
-        }
+        self.render_kitty(&Self::frame_to_image(frame), out)
     }
 
     fn cleanup(&mut self) {
@@ -208,7 +166,7 @@ impl Renderer for ViuRenderer {
     }
 }
 
-impl Drop for ViuRenderer {
+impl Drop for GraphicRenderer {
     fn drop(&mut self) {
         self.leave_screen();
     }
@@ -216,13 +174,13 @@ impl Drop for ViuRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{KITTY_IMAGE_ID, KITTY_PLACEMENT_ID, ViuRenderer, kitty_streaming_supported};
+    use super::{GraphicRenderer, KITTY_IMAGE_ID, KITTY_PLACEMENT_ID, kitty_supported};
     use image::{DynamicImage, Rgb, RgbImage};
     use std::ffi::OsStr;
 
     #[test]
     fn kitty_stream_reuses_image_and_placement_ids() {
-        let mut renderer = ViuRenderer::new(false);
+        let mut renderer = GraphicRenderer::new();
         renderer.config.width = Some(1);
         renderer.config.height = Some(1);
         let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(2, 2, Rgb([1, 2, 3])));
@@ -242,7 +200,7 @@ mod tests {
 
     #[test]
     fn kitty_stream_silences_every_image_chunk() {
-        let renderer = ViuRenderer::new(false);
+        let renderer = GraphicRenderer::new();
         let img = DynamicImage::ImageRgb8(RgbImage::from_fn(64, 64, |x, y| {
             Rgb([x as u8, y as u8, (x ^ y) as u8])
         }));
@@ -257,30 +215,13 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(continuation_chunks.len() > 1);
         assert!(continuation_chunks.iter().all(
-            |chunk| chunk.starts_with("\x1b_Gm=1,q=2;")
-                || chunk.starts_with("\x1b_Gm=0,q=2;")
+            |chunk| chunk.starts_with("\x1b_Gm=1,q=2;") || chunk.starts_with("\x1b_Gm=0,q=2;")
         ));
     }
 
     #[test]
-    fn scrollback_mode_disables_streaming_protocols() {
-        let renderer = ViuRenderer::new(true);
-
-        assert!(!renderer.use_alternate_screen);
-        assert!(!renderer.kitty_streaming);
-        assert!(!renderer.config.absolute_offset);
-    }
-
-    #[test]
-    fn automatic_renderer_disables_viuer_protocol_backends() {
-        let renderer = ViuRenderer::new(false);
-
-        assert!(!renderer.config.use_kitty && !renderer.config.use_iterm);
-    }
-
-    #[test]
-    fn kitty_window_id_enables_streaming_without_a_probe() {
-        let supported = kitty_streaming_supported(
+    fn kitty_window_id_enables_graphics_without_a_probe() {
+        let supported = kitty_supported(
             Some(OsStr::new("1")),
             Some(OsStr::new("xterm-256color")),
             None,
@@ -291,16 +232,15 @@ mod tests {
     }
 
     #[test]
-    fn generic_terminal_does_not_enable_kitty_streaming() {
-        let supported =
-            kitty_streaming_supported(None, Some(OsStr::new("xterm-256color")), None, None);
+    fn generic_terminal_does_not_enable_kitty_graphics() {
+        let supported = kitty_supported(None, Some(OsStr::new("xterm-256color")), None, None);
 
         assert!(!supported);
     }
 
     #[test]
-    fn zed_enables_kitty_streaming_without_a_probe() {
-        let supported = kitty_streaming_supported(
+    fn zed_enables_graphics_without_a_probe() {
+        let supported = kitty_supported(
             None,
             Some(OsStr::new("xterm-256color")),
             Some(OsStr::new("zed")),
@@ -311,8 +251,8 @@ mod tests {
     }
 
     #[test]
-    fn recent_iterm_enables_kitty_streaming_without_a_probe() {
-        let supported = kitty_streaming_supported(
+    fn recent_iterm_enables_graphics_without_a_probe() {
+        let supported = kitty_supported(
             None,
             Some(OsStr::new("xterm-256color")),
             Some(OsStr::new("iTerm.app")),
@@ -323,8 +263,8 @@ mod tests {
     }
 
     #[test]
-    fn older_iterm_falls_back_without_requesting_file_display() {
-        let supported = kitty_streaming_supported(
+    fn older_iterm_does_not_enable_kitty_graphics() {
+        let supported = kitty_supported(
             None,
             Some(OsStr::new("xterm-256color")),
             Some(OsStr::new("iTerm.app")),

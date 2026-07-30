@@ -20,6 +20,13 @@ fn running_without_rom_shows_help() {
 }
 
 #[test]
+fn help_lists_graphic_renderer() {
+    let (stdout, _stderr, _code) = run(&[]);
+
+    assert!(stdout.contains("graphic"));
+}
+
+#[test]
 fn core_list_shows_header() {
     let (stdout, _stderr, code) = run(&["core", "list"]);
     assert_eq!(code, 0);

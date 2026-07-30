@@ -4,6 +4,13 @@ Run retro games in the terminal.
 
 It's still in development.
 
+## Renderers
+
+Asoby selects graphics mode when the terminal supports the Kitty graphics
+protocol and otherwise uses colored half blocks. Select a mode explicitly with
+`--renderer graphic`, `--renderer block`, `--renderer ascii`, or
+`--renderer debug`.
+
 ## Controls
 
 | Key | Control |

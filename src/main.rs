@@ -4,10 +4,11 @@ mod config;
 mod cores;
 mod input;
 mod libretro;
-mod render;
+mod renderer;
 
 use clap::{Parser, Subcommand};
 use commands::run::RunConfig;
+use renderer::RendererMode;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -20,9 +21,10 @@ struct Args {
         short = 'r',
         long = "renderer",
         default_value = "auto",
-        help = "Rendering backend (auto, block, ascii, debug)"
+        value_enum,
+        help = "Rendering backend"
     )]
-    renderer: String,
+    renderer: RendererMode,
 
     #[arg(
         short = 'c',

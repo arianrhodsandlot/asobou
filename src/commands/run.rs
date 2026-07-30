@@ -19,7 +19,7 @@ struct LatestFrameMailbox {
 
 #[derive(Default)]
 struct LatestFrameState {
-    frame: Option<Arc<crate::render::Frame>>,
+    frame: Option<Arc<crate::renderer::Frame>>,
     closed: bool,
     waiting: bool,
 }
@@ -35,7 +35,7 @@ impl LatestFrameMailbox {
         }
     }
 
-    fn publish(&self, frame: Arc<crate::render::Frame>) -> bool {
+    fn publish(&self, frame: Arc<crate::renderer::Frame>) -> bool {
         let mut state = self.state.lock().unwrap();
         if state.closed {
             return false;
@@ -46,7 +46,7 @@ impl LatestFrameMailbox {
         true
     }
 
-    fn receive(&self) -> Option<Arc<crate::render::Frame>> {
+    fn receive(&self) -> Option<Arc<crate::renderer::Frame>> {
         let mut state = self.state.lock().unwrap();
         while state.frame.is_none() && !state.closed {
             state.waiting = true;
@@ -256,7 +256,7 @@ fn resolve_core(
 }
 
 pub struct RunConfig {
-    pub renderer: String,
+    pub renderer: crate::renderer::RendererMode,
     pub core: Option<String>,
     pub render_fps: u32,
     pub keep_scrollback: bool,
@@ -337,6 +337,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
+    let renderer = crate::renderer::create(config.renderer, &config.rom, config.keep_scrollback)?;
     let core = unsafe { crate::libretro::load_core(&core_path)? };
     let mut audio_backend = crate::audio::create(&config.audio);
     let target_sample_rate = match audio_backend.preferred_sample_rate() {
@@ -368,8 +369,6 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         (core.retro_get_system_av_info)(&mut av_info);
         let w = av_info.geometry.base_width;
         let h = av_info.geometry.base_height;
-
-        let renderer = crate::render::create(&config.renderer, &config.rom, config.keep_scrollback);
 
         let audio_sink = match audio_backend.start(av_info.timing.sample_rate) {
             Ok(sink) => sink,
@@ -519,8 +518,8 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
-    fn frame(value: u8) -> Arc<crate::render::Frame> {
-        Arc::new(crate::render::Frame {
+    fn frame(value: u8) -> Arc<crate::renderer::Frame> {
+        Arc::new(crate::renderer::Frame {
             data: vec![value; 3],
             width: 1,
             height: 1,

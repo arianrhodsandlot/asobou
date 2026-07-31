@@ -20,6 +20,15 @@ fn running_without_rom_shows_help() {
 }
 
 #[test]
+fn version_flags_print_the_version() {
+    for flag in ["-v", "--version"] {
+        let (stdout, _stderr, code) = run(&[flag]);
+        assert_eq!(code, 0);
+        assert!(stdout.contains(env!("CARGO_PKG_VERSION")));
+    }
+}
+
+#[test]
 fn help_lists_graphic_renderer() {
     let (stdout, _stderr, _code) = run(&[]);
 
@@ -27,24 +36,26 @@ fn help_lists_graphic_renderer() {
 }
 
 #[test]
-fn help_lists_no_alt_screen() {
+fn help_lists_primary_screen() {
     let (stdout, _stderr, _code) = run(&[]);
 
-    assert!(stdout.contains("--no-alt-screen"));
+    assert!(stdout.contains("-p, --primary-screen"));
+    assert!(!stdout.contains("--no-alt-screen"));
 }
 
 #[test]
 fn help_lists_fps() {
     let (stdout, _stderr, _code) = run(&[]);
 
-    assert!(stdout.contains("--fps"));
+    assert!(stdout.contains("-f, --fps"));
 }
 
 #[test]
-fn help_lists_no_audio() {
+fn help_lists_mute() {
     let (stdout, _stderr, _code) = run(&[]);
 
-    assert!(stdout.contains("--no-audio"));
+    assert!(stdout.contains("-m, --mute"));
+    assert!(!stdout.contains("--no-audio"));
 }
 
 #[test]

@@ -12,7 +12,7 @@ use renderer::RendererMode;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "asoby", about = "Retro game emulator for the terminal")]
+#[command(name = "asoby", about = "Retro game emulator for the terminal", version, disable_version_flag = true)]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
@@ -34,6 +34,7 @@ struct Args {
     core: Option<String>,
 
     #[arg(
+        short = 'f',
         long = "fps",
         default_value_t = 60,
         value_parser = clap::value_parser!(u32).range(1..=240),
@@ -42,13 +43,22 @@ struct Args {
     fps: u32,
 
     #[arg(
-        long = "no-alt-screen",
+        short = 'p',
+        long = "primary-screen",
         help = "Render in the primary terminal buffer, leaving the final frame visible on exit"
     )]
     no_alt_screen: bool,
 
-    #[arg(long = "no-audio", help = "Disable game audio")]
+    #[arg(short = 'm', long = "mute", help = "Disable game audio")]
     no_audio: bool,
+
+    #[arg(
+        short = 'v',
+        long = "version",
+        action = clap::ArgAction::Version,
+        help = "Print version"
+    )]
+    version: (),
 
     #[arg(help = "Path to the ROM file to load")]
     rom: Option<PathBuf>,

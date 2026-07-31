@@ -164,6 +164,7 @@ pub struct RunConfig {
     pub muted: bool,
     pub rom: PathBuf,
     pub input_bindings: crate::input::InputBindings,
+    pub rewind: crate::config::RewindSettings,
 }
 
 struct TerminalGuard {
@@ -319,6 +320,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
 
         let terminal = TerminalGuard::enter()?;
         let status = config.input_bindings.status_line();
+        let rewind_settings = config.rewind;
         let input_bindings = config.input_bindings;
         let frame_mailbox = Arc::new(LatestFrameMailbox::new());
         let render_mailbox = Arc::clone(&frame_mailbox);
@@ -357,22 +359,23 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         );
         let mut input_error = None;
 
-        let mut rewind = if crate::emulation::libretro::serialization_quirks()
-            & crate::emulation::libretro::RETRO_SERIALIZATION_QUIRK_INCOMPLETE
-            == 0
+        let mut rewind = if rewind_settings.enabled
+            && crate::emulation::libretro::serialization_quirks()
+                & crate::emulation::libretro::RETRO_SERIALIZATION_QUIRK_INCOMPLETE
+                == 0
         {
             let state_size = core
                 .retro_serialize_size
                 .map_or(0, |size_fn| size_fn());
             crate::emulation::rewind::Rewind::new(
                 state_size,
-                crate::emulation::rewind::REWIND_GRANULARITY,
-                crate::emulation::rewind::REWIND_BUDGET,
+                rewind_settings.granularity,
+                rewind_settings.buffer_size,
             )
         } else {
             None
         };
-        if rewind.is_none() {
+        if rewind.is_none() && rewind_settings.enabled {
             eprintln!("Rewind disabled: core does not support savestates");
         }
         if let Some(rewind) = rewind.as_mut() {

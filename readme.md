@@ -40,7 +40,25 @@ y = "a"
 start = "enter"
 select = "backspace"
 quit = "esc"
+rewind = "r"
 ```
+
+Rewind keeps compressed snapshots of the emulated state and steps back while
+the rewind key is held. It costs up to 20 MB of memory plus some CPU, so it can
+be tuned or switched off entirely:
+
+```toml
+[rewind]
+enabled = true
+granularity = 2
+buffer_size_mb = 20
+```
+
+`granularity` is the number of frames between snapshots: higher values use less
+memory and CPU but rewind in coarser steps. `buffer_size_mb` caps the memory
+spent on stored snapshots; when the cap is reached the oldest snapshots are
+dropped. When rewind is disabled the rewind key is freed for other bindings
+and is hidden from the on-screen status line.
 
 Asoby loads the first applicable config path:
 

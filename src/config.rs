@@ -10,6 +10,38 @@ use std::path::{Path, PathBuf};
 #[serde(default, deny_unknown_fields)]
 struct Config {
     input: InputConfig,
+    rewind: RewindConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RewindConfig {
+    enabled: bool,
+    granularity: u64,
+    buffer_size_mb: usize,
+}
+
+impl Default for RewindConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            granularity: 2,
+            buffer_size_mb: 20,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RewindSettings {
+    pub enabled: bool,
+    pub granularity: u64,
+    pub buffer_size: usize,
+}
+
+#[derive(Debug)]
+pub struct Settings {
+    pub input_bindings: crate::input::InputBindings,
+    pub rewind: RewindSettings,
 }
 
 #[derive(Deserialize)]
@@ -114,9 +146,9 @@ impl Error for ConfigError {
     }
 }
 
-pub fn load_input_bindings() -> Result<crate::input::InputBindings, ConfigError> {
+pub fn load_settings() -> Result<Settings, ConfigError> {
     let path = config_path()?;
-    load_input_bindings_from(&path)
+    load_settings_from(&path)
 }
 
 fn config_path() -> Result<PathBuf, ConfigError> {
@@ -157,11 +189,18 @@ fn resolve_config_path(
     Ok(base.join("asoby").join("config.toml"))
 }
 
-fn load_input_bindings_from(path: &Path) -> Result<crate::input::InputBindings, ConfigError> {
+fn load_settings_from(path: &Path) -> Result<Settings, ConfigError> {
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
-            return Ok(crate::input::InputBindings::default());
+            return Ok(Settings {
+                input_bindings: crate::input::InputBindings::default(),
+                rewind: RewindSettings {
+                    enabled: true,
+                    granularity: 2,
+                    buffer_size: 20 * 1024 * 1024,
+                },
+            });
         }
         Err(source) => {
             return Err(ConfigError::Read {
@@ -171,17 +210,27 @@ fn load_input_bindings_from(path: &Path) -> Result<crate::input::InputBindings, 
         }
     };
 
-    parse_input_bindings(&contents, path)
+    parse_settings(&contents, path)
 }
 
-fn parse_input_bindings(
-    contents: &str,
-    path: &Path,
-) -> Result<crate::input::InputBindings, ConfigError> {
+fn parse_settings(contents: &str, path: &Path) -> Result<Settings, ConfigError> {
     let config: Config = toml::from_str(contents).map_err(|source| ConfigError::Parse {
         path: path.to_path_buf(),
         source,
     })?;
+    validate_rewind(&config.rewind, path)?;
+    let rewind = RewindSettings {
+        enabled: config.rewind.enabled,
+        granularity: config.rewind.granularity,
+        buffer_size: config
+            .rewind
+            .buffer_size_mb
+            .checked_mul(1024 * 1024)
+            .ok_or_else(|| ConfigError::Invalid {
+                path: path.to_path_buf(),
+                reason: "[rewind] buffer_size_mb is too large".into(),
+            })?,
+    };
     let input = config.input;
     let mut gamepad = vec![
         ("up", crate::input::BUTTON_UP, input.up.as_str()),
@@ -208,12 +257,32 @@ fn parse_input_bindings(
         }
     }
 
-    crate::input::InputBindings::new(&gamepad, &input.quit, &input.rewind).map_err(|reason| {
-        ConfigError::Invalid {
-            path: path.to_path_buf(),
-            reason,
-        }
+    let input_bindings =
+        crate::input::InputBindings::new(&gamepad, &input.quit, &input.rewind, rewind.enabled)
+            .map_err(|reason| ConfigError::Invalid {
+                path: path.to_path_buf(),
+                reason,
+            })?;
+    Ok(Settings {
+        input_bindings,
+        rewind,
     })
+}
+
+fn validate_rewind(rewind: &RewindConfig, path: &Path) -> Result<(), ConfigError> {
+    if rewind.granularity == 0 {
+        return Err(ConfigError::Invalid {
+            path: path.to_path_buf(),
+            reason: "[rewind] granularity must be at least 1".into(),
+        });
+    }
+    if rewind.buffer_size_mb == 0 {
+        return Err(ConfigError::Invalid {
+            path: path.to_path_buf(),
+            reason: "[rewind] buffer_size_mb must be at least 1".into(),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -263,31 +332,73 @@ mod tests {
     #[test]
     fn missing_config_uses_default_bindings() {
         let directory = tempfile::tempdir().unwrap();
-        let bindings = load_input_bindings_from(&directory.path().join("missing.toml")).unwrap();
+        let settings = load_settings_from(&directory.path().join("missing.toml")).unwrap();
 
-        assert_eq!(bindings.quit_name(), "esc");
+        assert_eq!(settings.input_bindings.quit_name(), "esc");
     }
 
     #[test]
     fn partial_config_keeps_unspecified_defaults() {
-        let bindings =
-            parse_input_bindings("[input]\na = \"v\"\n", Path::new("config.toml")).unwrap();
+        let settings = parse_settings("[input]\na = \"v\"\n", Path::new("config.toml")).unwrap();
 
-        assert_eq!(bindings.quit_name(), "esc");
-        assert_eq!(bindings.rewind_name(), "r");
+        assert_eq!(settings.input_bindings.quit_name(), "esc");
+        assert_eq!(settings.input_bindings.rewind_name(), "r");
+        assert!(settings.input_bindings.rewind_enabled());
+        assert!(settings.rewind.enabled);
+        assert_eq!(settings.rewind.granularity, 2);
+        assert_eq!(settings.rewind.buffer_size, 20 * 1024 * 1024);
+    }
+
+    #[test]
+    fn rewind_can_be_disabled() {
+        let settings = parse_settings("[rewind]\nenabled = false\n", Path::new("config.toml"))
+            .unwrap();
+
+        assert!(!settings.rewind.enabled);
+        assert!(!settings.input_bindings.rewind_enabled());
+    }
+
+    #[test]
+    fn rewind_settings_are_tunable() {
+        let settings = parse_settings(
+            "[rewind]\ngranularity = 5\nbuffer_size_mb = 64\n",
+            Path::new("config.toml"),
+        )
+        .unwrap();
+
+        assert!(settings.rewind.enabled);
+        assert_eq!(settings.rewind.granularity, 5);
+        assert_eq!(settings.rewind.buffer_size, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn zero_granularity_is_rejected() {
+        let error = parse_settings("[rewind]\ngranularity = 0\n", Path::new("config.toml"))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("granularity"));
+    }
+
+    #[test]
+    fn zero_buffer_size_is_rejected() {
+        let error =
+            parse_settings("[rewind]\nbuffer_size_mb = 0\n", Path::new("config.toml"))
+                .unwrap_err();
+
+        assert!(error.to_string().contains("buffer_size_mb"));
     }
 
     #[test]
     fn duplicate_keys_are_rejected() {
         let error =
-            parse_input_bindings("[input]\na = \"z\"\n", Path::new("config.toml")).unwrap_err();
+            parse_settings("[input]\na = \"z\"\n", Path::new("config.toml")).unwrap_err();
 
         assert!(error.to_string().contains("already bound"));
     }
 
     #[test]
     fn combinations_are_rejected() {
-        let error = parse_input_bindings("[input]\na = \"ctrl+x\"\n", Path::new("config.toml"))
+        let error = parse_settings("[input]\na = \"ctrl+x\"\n", Path::new("config.toml"))
             .unwrap_err();
 
         assert!(error.to_string().contains("key combinations"));

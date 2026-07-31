@@ -108,8 +108,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
 
-    let input_bindings = match config::load_input_bindings() {
-        Ok(bindings) => bindings,
+    let settings = match config::load_settings() {
+        Ok(settings) => settings,
         Err(error) => {
             eprintln!("Error: {error}");
             std::process::exit(1);
@@ -122,7 +122,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         no_alt_screen: args.no_alt_screen,
         muted: args.no_audio,
         rom,
-        input_bindings,
+        input_bindings: settings.input_bindings,
+        rewind: settings.rewind,
     };
     commands::run::run(config)
 }

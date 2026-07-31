@@ -6,9 +6,6 @@ use libc::c_void;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 
-pub const REWIND_GRANULARITY: u64 = 2;
-pub const REWIND_BUDGET: usize = 20 * 1024 * 1024;
-
 pub trait StateBackend {
     fn serialize(&self, data: &mut [u8]) -> bool;
     fn unserialize(&self, data: &[u8]) -> bool;

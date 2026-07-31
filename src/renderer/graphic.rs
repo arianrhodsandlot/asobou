@@ -1,7 +1,6 @@
 use super::{Frame, Renderer};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use image::{DynamicImage, RgbImage};
-use std::ffi::OsStr;
 use std::io::{self, IsTerminal, Write};
 
 const ENTER_SCREEN: &[u8] = b"\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H";
@@ -96,62 +95,6 @@ impl GraphicRenderer {
     }
 }
 
-pub fn supported(no_alt_screen: bool) -> bool {
-    !no_alt_screen
-        && io::stdout().is_terminal()
-        && kitty_supported(
-            std::env::var_os("KITTY_WINDOW_ID").as_deref(),
-            std::env::var_os("TERM").as_deref(),
-            std::env::var_os("TERM_PROGRAM").as_deref(),
-            std::env::var_os("TERM_PROGRAM_VERSION").as_deref(),
-        )
-}
-
-fn kitty_supported(
-    kitty_window_id: Option<&OsStr>,
-    term: Option<&OsStr>,
-    term_program: Option<&OsStr>,
-    term_program_version: Option<&OsStr>,
-) -> bool {
-    if kitty_window_id.is_some_and(|value| !value.is_empty()) {
-        return true;
-    }
-
-    if term
-        .and_then(OsStr::to_str)
-        .is_some_and(|value| value.eq_ignore_ascii_case("xterm-kitty"))
-    {
-        return true;
-    }
-
-    let Some(term_program) = term_program.and_then(OsStr::to_str) else {
-        return false;
-    };
-    match term_program.to_ascii_lowercase().as_str() {
-        "ghostty" | "wezterm" | "zed" => true,
-        "iterm.app" | "iterm2" => term_program_version
-            .and_then(OsStr::to_str)
-            .is_some_and(iterm_supports_kitty_graphics),
-        _ => false,
-    }
-}
-
-fn iterm_supports_kitty_graphics(version: &str) -> bool {
-    let mut components = version.split('.').map(|component| {
-        component
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect::<String>()
-            .parse::<u32>()
-            .unwrap_or_default()
-    });
-    (
-        components.next().unwrap_or_default(),
-        components.next().unwrap_or_default(),
-        components.next().unwrap_or_default(),
-    ) >= (3, 5, 5)
-}
-
 impl Renderer for GraphicRenderer {
     fn setup(&mut self, _src_width: u32, _src_height: u32) {
         self.enter_screen();
@@ -174,9 +117,8 @@ impl Drop for GraphicRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{GraphicRenderer, KITTY_IMAGE_ID, KITTY_PLACEMENT_ID, kitty_supported};
+    use super::{GraphicRenderer, KITTY_IMAGE_ID, KITTY_PLACEMENT_ID};
     use image::{DynamicImage, Rgb, RgbImage};
-    use std::ffi::OsStr;
 
     #[test]
     fn kitty_stream_reuses_image_and_placement_ids() {
@@ -219,58 +161,4 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn kitty_window_id_enables_graphics_without_a_probe() {
-        let supported = kitty_supported(
-            Some(OsStr::new("1")),
-            Some(OsStr::new("xterm-256color")),
-            None,
-            None,
-        );
-
-        assert!(supported);
-    }
-
-    #[test]
-    fn generic_terminal_does_not_enable_kitty_graphics() {
-        let supported = kitty_supported(None, Some(OsStr::new("xterm-256color")), None, None);
-
-        assert!(!supported);
-    }
-
-    #[test]
-    fn zed_enables_graphics_without_a_probe() {
-        let supported = kitty_supported(
-            None,
-            Some(OsStr::new("xterm-256color")),
-            Some(OsStr::new("zed")),
-            None,
-        );
-
-        assert!(supported);
-    }
-
-    #[test]
-    fn recent_iterm_enables_graphics_without_a_probe() {
-        let supported = kitty_supported(
-            None,
-            Some(OsStr::new("xterm-256color")),
-            Some(OsStr::new("iTerm.app")),
-            Some(OsStr::new("3.6.5")),
-        );
-
-        assert!(supported);
-    }
-
-    #[test]
-    fn older_iterm_does_not_enable_kitty_graphics() {
-        let supported = kitty_supported(
-            None,
-            Some(OsStr::new("xterm-256color")),
-            Some(OsStr::new("iTerm.app")),
-            Some(OsStr::new("3.4.23")),
-        );
-
-        assert!(!supported);
-    }
 }

@@ -32,6 +32,7 @@ struct InputConfig {
     l3: Option<String>,
     r3: Option<String>,
     quit: String,
+    rewind: String,
 }
 
 impl Default for InputConfig {
@@ -54,6 +55,7 @@ impl Default for InputConfig {
             l3: None,
             r3: None,
             quit: "esc".into(),
+            rewind: "r".into(),
         }
     }
 }
@@ -206,9 +208,11 @@ fn parse_input_bindings(
         }
     }
 
-    crate::input::InputBindings::new(&gamepad, &input.quit).map_err(|reason| ConfigError::Invalid {
-        path: path.to_path_buf(),
-        reason,
+    crate::input::InputBindings::new(&gamepad, &input.quit, &input.rewind).map_err(|reason| {
+        ConfigError::Invalid {
+            path: path.to_path_buf(),
+            reason,
+        }
     })
 }
 
@@ -270,6 +274,7 @@ mod tests {
             parse_input_bindings("[input]\na = \"v\"\n", Path::new("config.toml")).unwrap();
 
         assert_eq!(bindings.quit_name(), "esc");
+        assert_eq!(bindings.rewind_name(), "r");
     }
 
     #[test]

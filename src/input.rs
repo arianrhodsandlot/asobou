@@ -103,10 +103,12 @@ pub struct InputBindings {
     gamepad: Vec<Binding>,
     quit: InputKey,
     quit_name: String,
+    rewind: InputKey,
+    rewind_name: String,
 }
 
 impl InputBindings {
-    pub fn new(gamepad: &[(&str, usize, &str)], quit: &str) -> Result<Self, String> {
+    pub fn new(gamepad: &[(&str, usize, &str)], quit: &str, rewind: &str) -> Result<Self, String> {
         let mut assigned = HashMap::new();
         let mut bindings = Vec::with_capacity(gamepad.len());
 
@@ -133,10 +135,25 @@ impl InputBindings {
             ));
         }
 
+        let rewind_key = InputKey::parse(rewind)
+            .map_err(|error| format!("invalid key for input \"rewind\": {error}"))?;
+        if let Some(previous) = assigned.get(&rewind_key) {
+            return Err(format!(
+                "key \"{rewind}\" for input \"rewind\" is already bound to \"{previous}\""
+            ));
+        }
+        if rewind_key == quit_key {
+            return Err(format!(
+                "key \"{rewind}\" for input \"rewind\" is already bound to \"quit\""
+            ));
+        }
+
         Ok(Self {
             gamepad: bindings,
             quit: quit_key,
             quit_name: quit.to_ascii_lowercase(),
+            rewind: rewind_key,
+            rewind_name: rewind.to_ascii_lowercase(),
         })
     }
 
@@ -145,8 +162,13 @@ impl InputBindings {
         &self.quit_name
     }
 
+    #[cfg(test)]
+    pub fn rewind_name(&self) -> &str {
+        &self.rewind_name
+    }
+
     pub fn status_line(&self) -> String {
-        let mut items = Vec::with_capacity(17);
+        let mut items = Vec::with_capacity(18);
         for (label, button) in [
             ("↑", BUTTON_UP),
             ("↓", BUTTON_DOWN),
@@ -170,6 +192,7 @@ impl InputBindings {
             }
         }
         items.push(format!("Exit-{}", self.quit_name));
+        items.push(format!("Rewind-{}", self.rewind_name));
         items.join(" ")
     }
 }
@@ -264,6 +287,11 @@ impl Default for InputBindings {
                 keypad: false,
             },
             quit_name: "esc".into(),
+            rewind: InputKey {
+                code: KeyCode::Char('r'),
+                keypad: false,
+            },
+            rewind_name: "r".into(),
         }
     }
 }
@@ -275,6 +303,8 @@ pub struct InputState {
     quit_requested: bool,
     release_events_supported: bool,
     failsafe_key: Option<usize>,
+    rewind_key: KeyState,
+    rewind_failsafe: bool,
 }
 
 impl Default for InputState {
@@ -298,6 +328,8 @@ impl InputState {
             quit_requested: false,
             release_events_supported,
             failsafe_key: None,
+            rewind_key: KeyState::new(),
+            rewind_failsafe: false,
         }
     }
 
@@ -308,6 +340,31 @@ impl InputState {
         }
 
         let event_key = InputKey::from_event(event);
+        if event_key == self.bindings.rewind {
+            match event.kind {
+                KeyEventKind::Press => {
+                    self.rewind_key.repeat_seen |= self.rewind_key.pressed;
+                    self.rewind_key.pressed = true;
+                    self.rewind_key.last_seen = Some(now);
+                    self.rewind_failsafe = true;
+                }
+                KeyEventKind::Repeat => {
+                    self.rewind_key.pressed = true;
+                    self.rewind_key.repeat_seen = true;
+                    self.rewind_key.last_seen = Some(now);
+                    self.rewind_failsafe = true;
+                }
+                KeyEventKind::Release => {
+                    self.rewind_key.pressed = false;
+                    self.rewind_key.last_seen = None;
+                    self.rewind_key.repeat_seen = false;
+                    self.rewind_failsafe = false;
+                    self.release_events_supported = true;
+                }
+            }
+            return;
+        }
+
         let Some(key_id) = self
             .bindings
             .gamepad
@@ -364,6 +421,23 @@ impl InputState {
                     self.failsafe_key = None;
                 }
             }
+            if self.rewind_failsafe {
+                let key = &mut self.rewind_key;
+                let timeout = if key.repeat_seen {
+                    REPEAT_TIMEOUT
+                } else {
+                    RELEASE_EVENT_FAILSAFE
+                };
+                if key
+                    .last_seen
+                    .is_some_and(|last_seen| now.saturating_duration_since(last_seen) >= timeout)
+                {
+                    key.pressed = false;
+                    key.last_seen = None;
+                    key.repeat_seen = false;
+                    self.rewind_failsafe = false;
+                }
+            }
             self.rebuild_buttons();
             return;
         }
@@ -386,6 +460,22 @@ impl InputState {
                 key.repeat_seen = false;
             }
         }
+        if self.rewind_key.pressed {
+            let timeout = if self.rewind_key.repeat_seen {
+                REPEAT_TIMEOUT
+            } else {
+                INITIAL_HOLD_GRACE
+            };
+            if self
+                .rewind_key
+                .last_seen
+                .is_some_and(|last_seen| now.saturating_duration_since(last_seen) >= timeout)
+            {
+                self.rewind_key.pressed = false;
+                self.rewind_key.last_seen = None;
+                self.rewind_key.repeat_seen = false;
+            }
+        }
         self.rebuild_buttons();
     }
 
@@ -396,11 +486,17 @@ impl InputState {
             key.repeat_seen = false;
         }
         self.failsafe_key = None;
+        self.rewind_key = KeyState::new();
+        self.rewind_failsafe = false;
         self.buttons.fill(false);
     }
 
     pub fn quit_requested(&self) -> bool {
         self.quit_requested
+    }
+
+    pub fn rewind_pressed(&self) -> bool {
+        self.rewind_key.pressed
     }
 
     pub fn button_mask(&self) -> u16 {
@@ -706,7 +802,7 @@ mod tests {
 
     #[test]
     fn configured_quit_key_requests_shutdown() {
-        let bindings = InputBindings::new(&[("a", BUTTON_A, "x")], "q").unwrap();
+        let bindings = InputBindings::new(&[("a", BUTTON_A, "x")], "q", "r").unwrap();
         let mut state = InputState::with_bindings(bindings, false);
 
         state.handle_key(key(KeyCode::Char('q'), KeyEventKind::Press), Instant::now());
@@ -727,7 +823,7 @@ mod tests {
 
     #[test]
     fn numpad_binding_does_not_match_the_number_row() {
-        let bindings = InputBindings::new(&[("a", BUTTON_A, "numpad-1")], "esc").unwrap();
+        let bindings = InputBindings::new(&[("a", BUTTON_A, "numpad-1")], "esc", "r").unwrap();
         let mut state = InputState::with_bindings(bindings, true);
 
         state.handle_key(key(KeyCode::Char('1'), KeyEventKind::Press), Instant::now());
@@ -737,7 +833,7 @@ mod tests {
 
     #[test]
     fn numpad_binding_matches_keypad_events() {
-        let bindings = InputBindings::new(&[("a", BUTTON_A, "numpad-1")], "esc").unwrap();
+        let bindings = InputBindings::new(&[("a", BUTTON_A, "numpad-1")], "esc", "r").unwrap();
         let mut state = InputState::with_bindings(bindings, true);
         let event = KeyEvent::new_with_kind_and_state(
             KeyCode::Char('1'),
@@ -753,7 +849,7 @@ mod tests {
 
     #[test]
     fn numpad_binding_ignores_num_lock_state() {
-        let bindings = InputBindings::new(&[("a", BUTTON_A, "numpad-1")], "esc").unwrap();
+        let bindings = InputBindings::new(&[("a", BUTTON_A, "numpad-1")], "esc", "r").unwrap();
         let mut state = InputState::with_bindings(bindings, true);
         let event = KeyEvent::new_with_kind_and_state(
             KeyCode::End,
@@ -769,7 +865,7 @@ mod tests {
 
     #[test]
     fn printable_plus_is_a_valid_binding() {
-        let bindings = InputBindings::new(&[("a", BUTTON_A, "+")], "esc").unwrap();
+        let bindings = InputBindings::new(&[("a", BUTTON_A, "+")], "esc", "r").unwrap();
         let mut state = InputState::with_bindings(bindings, false);
 
         state.handle_key(key(KeyCode::Char('+'), KeyEventKind::Press), Instant::now());
@@ -783,7 +879,7 @@ mod tests {
 
         assert_eq!(
             status,
-            "↑-up ↓-down ←-left →-right Select-backspace Start-enter X-s Y-a A-x B-z Exit-esc"
+            "↑-up ↓-down ←-left →-right Select-backspace Start-enter X-s Y-a A-x B-z Exit-esc Rewind-r"
         );
     }
 
@@ -794,17 +890,77 @@ mod tests {
                 ("l", BUTTON_L, "q"),
                 ("l2", BUTTON_L2, "w"),
                 ("r", BUTTON_R, "e"),
-                ("r2", BUTTON_R2, "r"),
+                ("r2", BUTTON_R2, "u"),
                 ("l3", BUTTON_L3, "t"),
                 ("r3", BUTTON_R3, "y"),
             ],
             "esc",
+            "p",
         )
         .unwrap();
 
         assert_eq!(
             bindings.status_line(),
-            "L1-q L2-w R1-e R2-r L3-t R3-y Exit-esc"
+            "L1-q L2-w R1-e R2-u L3-t R3-y Exit-esc Rewind-p"
         );
+    }
+
+    #[test]
+    fn rewind_key_stays_pressed_until_release() {
+        let now = Instant::now();
+        let mut state = InputState::with_release_events_supported(true);
+
+        state.handle_key(key(KeyCode::Char('r'), KeyEventKind::Press), now);
+        assert!(state.rewind_pressed());
+        assert_eq!(state.button_mask(), 0);
+
+        state.handle_key(
+            key(KeyCode::Char('r'), KeyEventKind::Release),
+            now + Duration::from_millis(1),
+        );
+        assert!(!state.rewind_pressed());
+    }
+
+    #[test]
+    fn rewind_key_uses_the_configured_binding() {
+        let bindings = InputBindings::new(&[], "esc", "y").unwrap();
+        let mut state = InputState::with_bindings(bindings, true);
+
+        state.handle_key(key(KeyCode::Char('r'), KeyEventKind::Press), Instant::now());
+        assert!(!state.rewind_pressed());
+
+        state.handle_key(key(KeyCode::Char('y'), KeyEventKind::Press), Instant::now());
+        assert!(state.rewind_pressed());
+    }
+
+    #[test]
+    fn rewind_key_recovers_from_a_missing_release() {
+        let now = Instant::now();
+        let mut state = InputState::with_release_events_supported(true);
+
+        state.handle_key(key(KeyCode::Char('r'), KeyEventKind::Press), now);
+        state.expire(now + RELEASE_EVENT_FAILSAFE);
+
+        assert!(!state.rewind_pressed());
+    }
+
+    #[test]
+    fn rewind_key_conflicts_with_gamepad_and_quit_bindings() {
+        let error = InputBindings::new(&[("a", BUTTON_A, "r")], "esc", "r").unwrap_err();
+        assert!(error.contains("already bound"));
+
+        let error = InputBindings::new(&[], "r", "r").unwrap_err();
+        assert!(error.contains("already bound"));
+    }
+
+    #[test]
+    fn clear_resets_the_rewind_key() {
+        let now = Instant::now();
+        let mut state = InputState::default();
+        state.handle_key(key(KeyCode::Char('r'), KeyEventKind::Press), now);
+
+        state.clear();
+
+        assert!(!state.rewind_pressed());
     }
 }

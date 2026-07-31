@@ -2,8 +2,8 @@ mod audio;
 mod commands;
 mod config;
 mod cores;
+mod emulation;
 mod input;
-mod libretro;
 mod renderer;
 
 use clap::{Parser, Subcommand};

@@ -224,10 +224,24 @@ fn drain_pending_terminal_events() {
     }
 }
 
+fn rewind_run_frame(core: &crate::emulation::libretro::Core, frame_mailbox: &LatestFrameMailbox) {
+    crate::emulation::libretro::set_video_capture_enabled(true);
+    unsafe {
+        (core.retro_run)();
+    }
+    let frame = crate::emulation::libretro::FRAME
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().cloned());
+    if let Some(frame) = frame {
+        frame_mailbox.publish(frame);
+    }
+}
+
 pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
     ctrlc::set_handler(|| std::process::exit(0))?;
     RUNNING.store(true, Ordering::SeqCst);
-    crate::libretro::set_joypad_buttons(0);
+    crate::emulation::libretro::set_joypad_buttons(0);
 
     let cores_dir = crate::cores::cores_dir();
     std::fs::create_dir_all(&cores_dir).ok();
@@ -254,7 +268,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let renderer = crate::renderer::create(config.renderer, &config.rom, config.no_alt_screen)?;
-    let core = unsafe { crate::libretro::load_core(&core_path)? };
+    let core = unsafe { crate::emulation::libretro::load_core(&core_path)? };
     let mut audio_backend = if config.muted {
         crate::audio::muted()
     } else {
@@ -268,24 +282,24 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             None
         }
     };
-    crate::libretro::set_target_sample_rate(target_sample_rate);
+    crate::emulation::libretro::set_target_sample_rate(target_sample_rate);
 
     unsafe {
         let _version = (core.retro_api_version)();
-        crate::libretro::setup_callbacks(&core);
+        crate::emulation::libretro::setup_callbacks(&core);
         (core.retro_init)();
 
-        let mut sys_info: crate::libretro::RetroSystemInfo = mem::zeroed();
+        let mut sys_info: crate::emulation::libretro::RetroSystemInfo = mem::zeroed();
         (core.retro_get_system_info)(&mut sys_info);
 
-        let loaded = crate::libretro::load_rom(&core, &config.rom)?;
+        let loaded = crate::emulation::libretro::load_rom(&core, &config.rom)?;
         if !loaded {
             eprintln!("Failed to load ROM: {}", config.rom.display());
             (core.retro_deinit)();
             return Ok(());
         }
 
-        let mut av_info: crate::libretro::RetroSystemAvInfo = mem::zeroed();
+        let mut av_info: crate::emulation::libretro::RetroSystemAvInfo = mem::zeroed();
         (core.retro_get_system_av_info)(&mut av_info);
         let w = av_info.geometry.base_width;
         let h = av_info.geometry.base_height;
@@ -298,7 +312,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
                 audio_backend.start(av_info.timing.sample_rate)?
             }
         };
-        *crate::libretro::AUDIO.lock().unwrap() = Some(audio_sink);
+        *crate::emulation::libretro::AUDIO.lock().unwrap() = Some(audio_sink);
 
         let mut renderer = renderer;
         renderer.setup(w, h);
@@ -343,6 +357,29 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         );
         let mut input_error = None;
 
+        let mut rewind = if crate::emulation::libretro::serialization_quirks()
+            & crate::emulation::libretro::RETRO_SERIALIZATION_QUIRK_INCOMPLETE
+            == 0
+        {
+            let state_size = core
+                .retro_serialize_size
+                .map_or(0, |size_fn| size_fn());
+            crate::emulation::rewind::Rewind::new(
+                state_size,
+                crate::emulation::rewind::REWIND_GRANULARITY,
+                crate::emulation::rewind::REWIND_BUDGET,
+            )
+        } else {
+            None
+        };
+        if rewind.is_none() {
+            eprintln!("Rewind disabled: core does not support savestates");
+        }
+        if let Some(rewind) = rewind.as_mut() {
+            rewind.capture(&core, 0);
+        }
+        let mut frame_count = 0u64;
+
         while RUNNING.load(Ordering::SeqCst) {
             loop {
                 match event::poll(Duration::ZERO) {
@@ -373,29 +410,58 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             input.expire(Instant::now());
-            crate::libretro::set_joypad_buttons(input.button_mask());
+            crate::emulation::libretro::set_joypad_buttons(input.button_mask());
             if !RUNNING.load(Ordering::SeqCst) {
                 break;
             }
 
-            let capture_frame = Instant::now() >= next_render && frame_mailbox.wants_frame();
-            crate::libretro::set_video_capture_enabled(capture_frame);
-            (core.retro_run)();
-
-            if capture_frame {
-                let frame = crate::libretro::FRAME
-                    .lock()
-                    .ok()
-                    .and_then(|guard| guard.as_ref().cloned());
-                if let Some(frame) = frame
-                    && !frame_mailbox.publish(frame)
-                {
-                    break;
+            let rewound = if input.rewind_pressed() {
+                if let Some(rewind) = rewind.as_mut() {
+                    crate::emulation::libretro::set_audio_muted(true);
+                    let target = rewind.rewind(
+                        &core,
+                        frame_count,
+                        &mut || rewind_run_frame(&core, &frame_mailbox),
+                    );
+                    crate::emulation::libretro::set_audio_muted(false);
+                    match target {
+                        Some(target) => {
+                            frame_count = target;
+                            true
+                        }
+                        None => false,
+                    }
+                } else {
+                    false
                 }
-                next_render += render_duration;
-                let now = Instant::now();
-                if next_render < now {
-                    next_render = now;
+            } else {
+                false
+            };
+
+            if !rewound {
+                let capture_frame = Instant::now() >= next_render && frame_mailbox.wants_frame();
+                crate::emulation::libretro::set_video_capture_enabled(capture_frame);
+                (core.retro_run)();
+                frame_count += 1;
+                if let Some(rewind) = rewind.as_mut() {
+                    rewind.capture(&core, frame_count);
+                }
+
+                if capture_frame {
+                    let frame = crate::emulation::libretro::FRAME
+                        .lock()
+                        .ok()
+                        .and_then(|guard| guard.as_ref().cloned());
+                    if let Some(frame) = frame
+                        && !frame_mailbox.publish(frame)
+                    {
+                        break;
+                    }
+                    next_render += render_duration;
+                    let now = Instant::now();
+                    if next_render < now {
+                        next_render = now;
+                    }
                 }
             }
 
@@ -409,8 +475,8 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         input.clear();
-        crate::libretro::set_joypad_buttons(0);
-        crate::libretro::set_video_capture_enabled(true);
+        crate::emulation::libretro::set_joypad_buttons(0);
+        crate::emulation::libretro::set_video_capture_enabled(true);
         frame_mailbox.close();
         match render_thread.join() {
             Ok(result) => result?,
@@ -418,7 +484,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         }
         drop(terminal);
 
-        if let Ok(mut audio) = crate::libretro::AUDIO.lock() {
+        if let Ok(mut audio) = crate::emulation::libretro::AUDIO.lock() {
             audio.take();
         }
         audio_backend.stop();

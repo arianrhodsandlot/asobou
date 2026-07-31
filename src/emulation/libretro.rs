@@ -6,7 +6,7 @@ use std::ffi::CString;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicUsize, Ordering};
 
 // Environment command constants
 const RETRO_ENV_GET_SYSTEM_DIRECTORY: c_uint = 9;
@@ -30,6 +30,8 @@ const RETRO_ENV_SET_CORE_OPTIONS_DISPLAY: c_uint = 55;
 const RETRO_ENV_GET_INPUT_BITMASKS: c_uint = 51 | 0x10000;
 const RETRO_ENV_GET_TARGET_SAMPLE_RATE: c_uint = 81 | 0x10000;
 const RETRO_ENV_SET_SERIALIZATION_QUIRKS: c_uint = 87;
+
+pub const RETRO_SERIALIZATION_QUIRK_INCOMPLETE: usize = 1;
 
 #[repr(C)]
 pub struct RetroSystemInfo {
@@ -92,6 +94,9 @@ pub struct Core {
     pub retro_load_game: unsafe extern "C" fn(*const RetroGameInfo) -> bool,
     pub retro_run: unsafe extern "C" fn(),
     pub retro_unload_game: unsafe extern "C" fn(),
+    pub retro_serialize_size: Option<unsafe extern "C" fn() -> usize>,
+    pub retro_serialize: Option<unsafe extern "C" fn(*mut c_void, usize) -> bool>,
+    pub retro_unserialize: Option<unsafe extern "C" fn(*const c_void, usize) -> bool>,
 }
 
 pub static FRAME: Mutex<Option<Arc<Frame>>> = Mutex::new(None);
@@ -100,6 +105,8 @@ static PIXEL_FORMAT: AtomicU32 = AtomicU32::new(PixelFormat::ZeroRgb1555 as u32)
 static TARGET_SAMPLE_RATE: AtomicU32 = AtomicU32::new(0);
 static JOYPAD_BUTTONS: AtomicU16 = AtomicU16::new(0);
 static VIDEO_CAPTURE_ENABLED: AtomicBool = AtomicBool::new(true);
+static AUDIO_MUTED: AtomicBool = AtomicBool::new(false);
+static SERIALIZATION_QUIRKS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -147,6 +154,9 @@ pub unsafe fn load_core(path: &Path) -> Result<Core, Box<dyn std::error::Error>>
         },
         retro_run: *unsafe { lib.get(b"retro_run")? },
         retro_unload_game: *unsafe { lib.get(b"retro_unload_game")? },
+        retro_serialize_size: unsafe { lib.get(b"retro_serialize_size").ok() }.map(|symbol| *symbol),
+        retro_serialize: unsafe { lib.get(b"retro_serialize").ok() }.map(|symbol| *symbol),
+        retro_unserialize: unsafe { lib.get(b"retro_unserialize").ok() }.map(|symbol| *symbol),
         _lib: lib,
     })
 }
@@ -162,7 +172,12 @@ unsafe extern "C" fn env_callback(cmd: c_uint, data: *mut c_void) -> bool {
         RETRO_ENV_SET_VARIABLES => true,
         RETRO_ENV_SET_CONTROLLER_INFO => true,
         RETRO_ENV_GET_LOG_INTERFACE => false,
-        RETRO_ENV_SET_SERIALIZATION_QUIRKS => true,
+        RETRO_ENV_SET_SERIALIZATION_QUIRKS => {
+            if !data.is_null() {
+                SERIALIZATION_QUIRKS.store(unsafe { *(data as *const usize) }, Ordering::Relaxed);
+            }
+            true
+        }
         RETRO_ENV_GET_MESSAGE_INTERFACE_VERSION => {
             if !data.is_null() {
                 unsafe { *(data as *mut c_uint) = 1 };
@@ -345,6 +360,14 @@ pub fn set_video_capture_enabled(enabled: bool) {
     VIDEO_CAPTURE_ENABLED.store(enabled, Ordering::Release);
 }
 
+pub fn set_audio_muted(muted: bool) {
+    AUDIO_MUTED.store(muted, Ordering::Release);
+}
+
+pub fn serialization_quirks() -> usize {
+    SERIALIZATION_QUIRKS.load(Ordering::Relaxed)
+}
+
 pub unsafe fn load_rom(core: &Core, rom_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
     let rom_data;
     let path_c;
@@ -396,6 +419,9 @@ pub unsafe fn load_rom(core: &Core, rom_path: &Path) -> Result<bool, Box<dyn std
 }
 
 unsafe extern "C" fn audio_sample(left: i16, right: i16) {
+    if AUDIO_MUTED.load(Ordering::Acquire) {
+        return;
+    }
     if let Ok(mut guard) = AUDIO.lock() {
         if let Some(ref mut sink) = *guard {
             sink.push(&[left, right]);
@@ -406,6 +432,9 @@ unsafe extern "C" fn audio_sample(left: i16, right: i16) {
 unsafe extern "C" fn audio_sample_batch(data: *const i16, frames: usize) -> usize {
     if data.is_null() {
         return 0;
+    }
+    if AUDIO_MUTED.load(Ordering::Acquire) {
+        return frames;
     }
     if let Ok(mut guard) = AUDIO.lock() {
         if let Some(ref mut backend) = *guard {

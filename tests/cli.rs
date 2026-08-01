@@ -1,10 +1,18 @@
+use std::path::Path;
 use std::process::Command;
 
 fn run(args: &[&str]) -> (String, String, i32) {
-    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
-        .args(args)
-        .output()
-        .expect("failed to run asoby");
+    run_in(None, args)
+}
+
+// Point the binary at an isolated data dir so tests never touch the real
+// user cores dir (~/Library/Application Support/asoby/cores).
+fn run_in(data_home: Option<&Path>, args: &[&str]) -> (String, String, i32) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_asoby"));
+    if let Some(dir) = data_home {
+        cmd.env("XDG_DATA_HOME", dir);
+    }
+    let output = cmd.args(args).output().expect("failed to run asoby");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let code = output.status.code().unwrap_or(-1);
@@ -60,7 +68,19 @@ fn help_lists_mute() {
 
 #[test]
 fn core_list_shows_header() {
-    let (stdout, _stderr, code) = run(&["core", "list"]);
+    // An empty cores dir prints "No cores installed." without a header, so
+    // stub an installed registered core file.
+    let dir = tempfile::tempdir().unwrap();
+    let cores = dir.path().join("asoby").join("cores");
+    std::fs::create_dir_all(&cores).unwrap();
+    let ext = match std::env::consts::OS {
+        "macos" => "dylib",
+        "windows" => "dll",
+        _ => "so",
+    };
+    std::fs::write(cores.join(format!("nestopia_libretro.{ext}")), b"").unwrap();
+
+    let (stdout, _stderr, code) = run_in(Some(dir.path()), &["core", "list"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("CORE"));
     assert!(stdout.contains("STATUS"));
@@ -68,21 +88,25 @@ fn core_list_shows_header() {
 
 #[test]
 fn core_install_unknown_core_fails() {
-    let (_stdout, stderr, code) = run(&["core", "install", "nonexistent_core"]);
+    let dir = tempfile::tempdir().unwrap();
+    let (_stdout, stderr, code) =
+        run_in(Some(dir.path()), &["core", "install", "nonexistent_core"]);
     assert_ne!(code, 0);
     assert!(stderr.contains("Unknown core"));
 }
 
 #[test]
 fn core_remove_unknown_core_is_noop() {
-    let (_stdout, stderr, code) = run(&["core", "remove", "nonexistent_core"]);
+    let dir = tempfile::tempdir().unwrap();
+    let (_stdout, stderr, code) = run_in(Some(dir.path()), &["core", "remove", "nonexistent_core"]);
     assert_ne!(code, 0);
     assert!(stderr.contains("Unknown core"));
 }
 
 #[test]
 fn core_remove_uninstalled_core_is_noop() {
-    let (_stdout, stderr, code) = run(&["core", "remove", "nestopia"]);
+    let dir = tempfile::tempdir().unwrap();
+    let (_stdout, stderr, code) = run_in(Some(dir.path()), &["core", "remove", "nestopia"]);
     assert_eq!(code, 0);
     assert!(stderr.contains("not installed"));
 }

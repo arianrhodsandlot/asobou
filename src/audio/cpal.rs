@@ -197,3 +197,74 @@ where
         None,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::AudioSink;
+    use super::{CpalSink, interpolate};
+    use ringbuf::HeapCons;
+    use ringbuf::HeapRb;
+    use ringbuf::traits::Consumer;
+    use ringbuf::traits::Split;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn interpolate_endpoints() {
+        assert_eq!(interpolate(100, 200, 0.0), 100);
+        assert_eq!(interpolate(100, 200, 1.0), 200);
+    }
+
+    #[test]
+    fn interpolate_midpoints_and_rounding() {
+        assert_eq!(interpolate(0, 100, 0.5), 50);
+        assert_eq!(interpolate(0, 10, 0.25), 3);
+        assert_eq!(interpolate(100, 0, 0.25), 75);
+        assert_eq!(interpolate(-100, 100, 0.5), 0);
+    }
+
+    fn sink_with(source_rate: f64, target_rate: f64) -> (CpalSink, HeapCons<i16>) {
+        let rb = HeapRb::<i16>::new(1024);
+        let (prod, cons) = rb.split();
+        let sink = CpalSink {
+            producer: prod,
+            source_rate,
+            target_rate,
+            next_output_position: 0.0,
+            input_position: 0,
+            previous: [0, 0],
+            has_previous: false,
+            dropped_samples: Arc::new(AtomicUsize::new(0)),
+        };
+        (sink, cons)
+    }
+
+    fn drain(cons: &mut HeapCons<i16>) -> Vec<i16> {
+        let mut out = Vec::new();
+        while let Some(s) = cons.try_pop() {
+            out.push(s);
+        }
+        out
+    }
+
+    #[test]
+    fn equal_rates_pass_samples_through_unchanged() {
+        let (mut sink, mut cons) = sink_with(44100.0, 44100.0);
+        sink.push(&[100, -100, 200, -200]);
+        assert_eq!(drain(&mut cons), vec![100, -100, 200, -200]);
+    }
+
+    #[test]
+    fn upsample_interpolates_between_input_frames() {
+        let (mut sink, mut cons) = sink_with(44100.0, 48000.0);
+        sink.push(&[0, 0, 1000, 1000]);
+        assert_eq!(drain(&mut cons), vec![0, 0, 919, 919]);
+    }
+
+    #[test]
+    fn downsample_skips_output_positions() {
+        let (mut sink, mut cons) = sink_with(48000.0, 44100.0);
+        sink.push(&[0, 0, 1000, 1000, 2000, 2000]);
+        assert_eq!(drain(&mut cons), vec![0, 0, 1088, 1088]);
+    }
+}

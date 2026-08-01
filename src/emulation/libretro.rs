@@ -422,11 +422,10 @@ unsafe extern "C" fn audio_sample(left: i16, right: i16) {
     if AUDIO_MUTED.load(Ordering::Acquire) {
         return;
     }
-    if let Ok(mut guard) = AUDIO.lock() {
-        if let Some(ref mut sink) = *guard {
+    if let Ok(mut guard) = AUDIO.lock()
+        && let Some(ref mut sink) = *guard {
             sink.push(&[left, right]);
         }
-    }
 }
 
 unsafe extern "C" fn audio_sample_batch(data: *const i16, frames: usize) -> usize {
@@ -436,12 +435,11 @@ unsafe extern "C" fn audio_sample_batch(data: *const i16, frames: usize) -> usiz
     if AUDIO_MUTED.load(Ordering::Acquire) {
         return frames;
     }
-    if let Ok(mut guard) = AUDIO.lock() {
-        if let Some(ref mut backend) = *guard {
+    if let Ok(mut guard) = AUDIO.lock()
+        && let Some(ref mut backend) = *guard {
             let samples = unsafe { std::slice::from_raw_parts(data, frames * 2) };
             backend.push(samples);
         }
-    }
     frames
 }
 

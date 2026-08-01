@@ -111,5 +111,31 @@ fn iso_format(unix_secs: u64) -> String {
 }
 
 fn is_leap(year: u64) -> bool {
-    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_leap, iso_format};
+
+    #[test]
+    fn leap_year_rules() {
+        assert!(is_leap(2000));
+        assert!(is_leap(2024));
+        assert!(!is_leap(1900));
+        assert!(!is_leap(2100));
+        assert!(!is_leap(2023));
+    }
+
+    #[test]
+    fn iso_format_epoch_and_day_boundaries() {
+        assert_eq!(iso_format(0), "1970-01-01T00-00-00");
+        assert_eq!(iso_format(86_399), "1970-01-01T23-59-59");
+        assert_eq!(iso_format(86_400), "1970-01-02T00-00-00");
+    }
+
+    #[test]
+    fn iso_format_known_timestamp() {
+        assert_eq!(iso_format(1_700_000_000), "2023-11-14T22-13-20");
+    }
 }

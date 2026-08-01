@@ -23,15 +23,9 @@ pub fn buildbot_base_url() -> Option<&'static str> {
         ("macos", "x86_64") => {
             Some("https://buildbot.libretro.com/nightly/apple/osx/x86_64/latest/")
         }
-        ("linux", "aarch64") => {
-            Some("https://buildbot.libretro.com/nightly/linux/aarch64/latest/")
-        }
-        ("linux", "x86_64") => {
-            Some("https://buildbot.libretro.com/nightly/linux/x86_64/latest/")
-        }
-        ("windows", "x86") => {
-            Some("https://buildbot.libretro.com/nightly/windows/x86/latest/")
-        }
+        ("linux", "aarch64") => Some("https://buildbot.libretro.com/nightly/linux/aarch64/latest/"),
+        ("linux", "x86_64") => Some("https://buildbot.libretro.com/nightly/linux/x86_64/latest/"),
+        ("windows", "x86") => Some("https://buildbot.libretro.com/nightly/windows/x86/latest/"),
         ("windows", "x86_64") => {
             Some("https://buildbot.libretro.com/nightly/windows/x86_64/latest/")
         }
@@ -175,9 +169,7 @@ static CORES: LazyLock<Vec<CoreEntry>> = LazyLock::new(|| {
 });
 
 pub fn find_core(name: &str) -> Option<&'static CoreEntry> {
-    CORES
-        .iter()
-        .find(|c| c.name.eq_ignore_ascii_case(name))
+    CORES.iter().find(|c| c.name.eq_ignore_ascii_case(name))
 }
 
 pub fn is_installed(core: &CoreEntry, dir: &Path) -> bool {
@@ -295,7 +287,11 @@ fn detect_zip(rom_path: &Path) -> Detection {
 
         if let Some(ref ext) = entry_ext {
             for system in SYSTEMS.iter() {
-                if system.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
+                if system
+                    .extensions
+                    .iter()
+                    .any(|e| e.eq_ignore_ascii_case(ext))
+                {
                     matched.insert(system.recommended_core);
                 }
             }
@@ -309,16 +305,18 @@ fn detection_from_candidates(candidates: BTreeSet<&'static str>) -> Detection {
     let candidates: Vec<_> = candidates.into_iter().collect();
     match candidates.as_slice() {
         [] => Detection::Unknown,
-        [core_name] => Detection::Detected {
-            core_name: *core_name,
-        },
+        [core_name] => Detection::Detected { core_name },
         _ => Detection::Ambiguous { candidates },
     }
 }
 
 // ── Core path resolution ───────────────────────────────────────────────────
 
-pub fn resolve_core_path(user_input: Option<&Path>, cores_dir: &Path, default_name: &str) -> PathBuf {
+pub fn resolve_core_path(
+    user_input: Option<&Path>,
+    cores_dir: &Path,
+    default_name: &str,
+) -> PathBuf {
     let input = match user_input {
         Some(p) => p,
         None => {
@@ -397,12 +395,12 @@ pub fn download_and_install(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse().ok());
 
-    if let Some(len) = content_length {
-        if len > MAX_DOWNLOAD_BYTES {
-            return Err(format!(
-                "Download size ({len} bytes) exceeds maximum ({MAX_DOWNLOAD_BYTES} bytes)"
-            ));
-        }
+    if let Some(len) = content_length
+        && len > MAX_DOWNLOAD_BYTES
+    {
+        return Err(format!(
+            "Download size ({len} bytes) exceeds maximum ({MAX_DOWNLOAD_BYTES} bytes)"
+        ));
     }
 
     let mut data = Vec::new();
@@ -416,11 +414,26 @@ pub fn download_and_install(
         return Err("Download exceeded maximum size".to_string());
     }
 
-    let cursor = std::io::Cursor::new(data);
-    let mut archive =
-        zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid zip: {e}"))?;
-
     let expected_name = format!("{}_libretro.{}", core.artifact, ext);
+    if data.len() as u64 > MAX_DOWNLOAD_BYTES {
+        return Err("Download exceeded maximum size".to_string());
+    }
+
+    let installed = extract_core_archive(data, cores_dir, &expected_name)?;
+    if !quiet {
+        eprintln!("  Installed: {}", installed.display());
+    }
+    Ok(installed)
+}
+
+fn extract_core_archive(
+    data: Vec<u8>,
+    cores_dir: &Path,
+    expected_name: &str,
+) -> Result<PathBuf, String> {
+    let cursor = std::io::Cursor::new(data);
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid zip: {e}"))?;
+    let ext = core_extension();
 
     let mut extracted_path: Option<PathBuf> = None;
     let mut temp_files: Vec<(PathBuf, PathBuf)> = Vec::new();
@@ -452,27 +465,24 @@ pub fn download_and_install(
         }
 
         let final_path = cores_dir.join(&fname);
-        let temp_path = final_path.with_extension(format!(
-            "{ext}.tmp",
-            ext = core_extension()
-        ));
+        let temp_path = final_path.with_extension(format!("{ext}.tmp", ext = core_extension()));
 
         if let Some(parent) = temp_path.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("Cannot create directory: {e}"))?;
         }
 
-        let mut out = fs::File::create(&temp_path)
-            .map_err(|e| format!("Cannot create temp file: {e}"))?;
+        let mut out =
+            fs::File::create(&temp_path).map_err(|e| format!("Cannot create temp file: {e}"))?;
 
-        let copied = io::copy(&mut file, &mut out)
-            .map_err(|e| format!("Extract failed: {e}"))?;
+        let copied = io::copy(&mut file, &mut out).map_err(|e| format!("Extract failed: {e}"))?;
 
         if copied > MAX_DOWNLOAD_BYTES {
             let _ = fs::remove_file(&temp_path);
             return Err("Extracted file exceeds maximum size".to_string());
         }
 
-        if fname_lower == expected_name.to_lowercase() || fname_lower.ends_with(&format!(".{ext}")) {
+        if fname_lower == expected_name.to_lowercase() || fname_lower.ends_with(&format!(".{ext}"))
+        {
             extracted_path = Some(final_path.clone());
         }
 
@@ -487,17 +497,11 @@ pub fn download_and_install(
     }
 
     for (temp_path, final_path) in &temp_files {
-        fs::rename(temp_path, final_path)
-            .map_err(|e| format!("Failed to install core: {e}"))?;
+        fs::rename(temp_path, final_path).map_err(|e| format!("Failed to install core: {e}"))?;
     }
 
     match extracted_path {
-        Some(p) => {
-            if !quiet {
-                eprintln!("  Installed: {}", p.display());
-            }
-            Ok(p)
-        }
+        Some(p) => Ok(p),
         None => Ok(temp_files[0].1.clone()),
     }
 }
@@ -512,7 +516,25 @@ pub fn remove_core_file(core: &CoreEntry, dir: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Detection, detect_by_extension};
+    use super::*;
+    use std::io::Write;
+
+    fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut buf);
+            for (name, data) in entries {
+                let options = zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
+                writer.start_file(*name, options).unwrap();
+                writer.write_all(data).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    // ── Extension detection ────────────────────────────────────────────────
 
     #[test]
     fn nes_extension_selects_nestopia() {
@@ -530,5 +552,346 @@ mod tests {
         };
 
         assert_eq!(candidates, vec!["genesis_plus_gx", "stella"]);
+    }
+
+    #[test]
+    fn sfc_extension_selects_snes9x() {
+        let Detection::Detected { core_name } = detect_by_extension("sfc") else {
+            panic!("expected a detected core");
+        };
+
+        assert_eq!(core_name, "snes9x");
+    }
+
+    #[test]
+    fn extension_matching_is_case_insensitive() {
+        let Detection::Detected { core_name } = detect_by_extension("SMS") else {
+            panic!("expected a detected core");
+        };
+
+        assert_eq!(core_name, "genesis_plus_gx");
+    }
+
+    #[test]
+    fn unknown_extension_is_unknown() {
+        assert!(matches!(detect_by_extension("xyz"), Detection::Unknown));
+    }
+
+    // ── Signature detection ────────────────────────────────────────────────
+
+    #[test]
+    fn nes_signature_detects_nestopia() {
+        let dir = tempfile::tempdir().unwrap();
+        let rom = dir.path().join("game.bin");
+        fs::write(&rom, b"NES\x1a\x02\x03\x04").unwrap();
+
+        let Detection::Detected { core_name } = detect_by_signature(&rom).unwrap() else {
+            panic!("expected a detected core");
+        };
+        assert_eq!(core_name, "nestopia");
+    }
+
+    #[test]
+    fn sega_signature_at_offset_0x100_detects_genesis() {
+        let dir = tempfile::tempdir().unwrap();
+        let rom = dir.path().join("cart.bin");
+        let mut data = vec![0u8; 0x100];
+        data.extend_from_slice(b"SEGA GENESIS");
+        fs::write(&rom, &data).unwrap();
+
+        let Detection::Detected { core_name } = detect_by_signature(&rom).unwrap() else {
+            panic!("expected a detected core");
+        };
+        assert_eq!(core_name, "genesis_plus_gx");
+    }
+
+    #[test]
+    fn unknown_signature_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let rom = dir.path().join("game.bin");
+        fs::write(&rom, b"\x00\x01\x02\x03\x04\x05").unwrap();
+
+        assert!(detect_by_signature(&rom).is_none());
+    }
+
+    #[test]
+    fn truncated_signature_region_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let rom = dir.path().join("short.bin");
+        fs::write(&rom, b"SEGA").unwrap();
+
+        assert!(detect_by_signature(&rom).is_none());
+    }
+
+    #[test]
+    fn missing_rom_signature_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detect_by_signature(&dir.path().join("missing.nes")).is_none());
+    }
+
+    // ── Full detection ─────────────────────────────────────────────────────
+
+    #[test]
+    fn signature_takes_precedence_over_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let rom = dir.path().join("game.bin");
+        fs::write(&rom, b"NES\x1a\x02\x03\x04").unwrap();
+
+        let Detection::Detected { core_name } = detect_rom(&rom, None) else {
+            panic!("expected a detected core");
+        };
+        assert_eq!(core_name, "nestopia");
+    }
+
+    #[test]
+    fn extension_detection_does_not_require_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let Detection::Detected { core_name } = detect_rom(&dir.path().join("missing.nes"), None)
+        else {
+            panic!("expected a detected core");
+        };
+        assert_eq!(core_name, "nestopia");
+    }
+
+    #[test]
+    fn explicit_core_overrides_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        let Detection::Detected { core_name } =
+            detect_rom(&dir.path().join("game.nes"), Some("snes9x"))
+        else {
+            panic!("expected a detected core");
+        };
+        assert_eq!(core_name, "snes9x");
+    }
+
+    #[test]
+    fn unknown_explicit_core_yields_empty_core_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let Detection::Detected { core_name } =
+            detect_rom(&dir.path().join("game.nes"), Some("nope"))
+        else {
+            panic!("expected a detected core");
+        };
+        assert_eq!(core_name, "");
+    }
+
+    // ── Zip introspection ──────────────────────────────────────────────────
+
+    #[test]
+    fn zip_with_single_rom_detects_its_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("game.zip");
+        fs::write(&zip_path, make_zip(&[("game.sfc", b"ROM")])).unwrap();
+
+        let Detection::Detected { core_name } = detect_rom(&zip_path, None) else {
+            panic!("expected a detected core");
+        };
+        assert_eq!(core_name, "snes9x");
+    }
+
+    #[test]
+    fn zip_extension_matching_is_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("game.zip");
+        fs::write(&zip_path, make_zip(&[("GAME.SFC", b"ROM")])).unwrap();
+
+        let Detection::Detected { core_name } = detect_rom(&zip_path, None) else {
+            panic!("expected a detected core");
+        };
+        assert_eq!(core_name, "snes9x");
+    }
+
+    #[test]
+    fn zip_with_multiple_systems_is_ambiguous() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("multi.zip");
+        fs::write(&zip_path, make_zip(&[("a.nes", b"1"), ("b.sfc", b"2")])).unwrap();
+
+        let Detection::Ambiguous { candidates } = detect_rom(&zip_path, None) else {
+            panic!("expected ambiguous core candidates");
+        };
+        assert_eq!(candidates, vec!["nestopia", "snes9x"]);
+    }
+
+    #[test]
+    fn zip_with_unmatched_files_is_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("data.zip");
+        fs::write(&zip_path, make_zip(&[("readme.txt", b"hi")])).unwrap();
+
+        assert!(matches!(detect_rom(&zip_path, None), Detection::Unknown));
+    }
+
+    #[test]
+    fn invalid_zip_is_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("broken.zip");
+        fs::write(&zip_path, b"not a zip").unwrap();
+
+        assert!(matches!(detect_rom(&zip_path, None), Detection::Unknown));
+    }
+
+    // ── Core file operations ───────────────────────────────────────────────
+
+    #[test]
+    fn installed_cores_lists_only_present_core_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = core_extension();
+        fs::write(dir.path().join(format!("nestopia_libretro.{ext}")), b"").unwrap();
+
+        let installed = installed_cores(dir.path());
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].name, "nestopia");
+        assert!(is_installed(installed[0], dir.path()));
+    }
+
+    #[test]
+    fn remove_core_file_deletes_and_tolerates_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = core_extension();
+        let stub = dir.path().join(format!("snes9x_libretro.{ext}"));
+        fs::write(&stub, b"").unwrap();
+        let snes9x = find_core("snes9x").unwrap();
+
+        remove_core_file(snes9x, dir.path()).unwrap();
+        assert!(!stub.exists());
+
+        remove_core_file(snes9x, dir.path()).unwrap();
+    }
+
+    #[test]
+    fn resolve_core_library_path_joins_artifact_and_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = core_extension();
+        assert_eq!(
+            resolve_core_library_path("mgba", dir.path()),
+            dir.path().join(format!("mgba_libretro.{ext}"))
+        );
+    }
+
+    #[test]
+    fn resolve_core_path_defaults_to_named_core_in_cores_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = core_extension();
+        assert_eq!(
+            resolve_core_path(None, dir.path(), "nestopia"),
+            dir.path().join(format!("nestopia_libretro.{ext}"))
+        );
+    }
+
+    #[test]
+    fn resolve_core_path_returns_existing_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = core_extension();
+        let core_file = dir.path().join(format!("mycore_libretro.{ext}"));
+        fs::write(&core_file, b"").unwrap();
+
+        assert_eq!(
+            resolve_core_path(Some(&core_file), dir.path(), "nestopia"),
+            core_file
+        );
+    }
+
+    #[test]
+    fn resolve_core_path_finds_bare_name_in_cores_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = core_extension();
+        let core_file = dir.path().join(format!("stella_libretro.{ext}"));
+        fs::write(&core_file, b"").unwrap();
+
+        assert_eq!(
+            resolve_core_path(Some(Path::new("stella")), dir.path(), "nestopia"),
+            core_file
+        );
+    }
+
+    #[test]
+    fn resolve_core_path_matches_prefix_when_exact_name_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = core_extension();
+        let core_file = dir.path().join(format!("nestopia_libretro.{ext}"));
+        fs::write(&core_file, b"").unwrap();
+
+        assert_eq!(
+            resolve_core_path(Some(Path::new("nes")), dir.path(), "nestopia"),
+            core_file
+        );
+    }
+
+    // ── Zip extraction ─────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_installs_the_expected_core_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = core_extension();
+        let expected = dir.path().join(format!("nestopia_libretro.{ext}"));
+        let zip_bytes = make_zip(&[(&format!("nestopia_libretro.{ext}"), b"\x7fELF fake core")]);
+
+        let path = extract_core_archive(zip_bytes, dir.path(), &format!("nestopia_libretro.{ext}"))
+            .unwrap();
+        assert_eq!(path, expected);
+        assert_eq!(fs::read(&expected).unwrap(), b"\x7fELF fake core");
+    }
+
+    #[test]
+    fn extract_installs_matching_extension_files_even_with_wrong_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = core_extension();
+        let expected = dir.path().join(format!("libsomething.{ext}"));
+        let zip_bytes = make_zip(&[(&format!("libsomething.{ext}"), b"data")]);
+
+        let path = extract_core_archive(zip_bytes, dir.path(), &format!("nestopia_libretro.{ext}"))
+            .unwrap();
+        assert_eq!(path, expected);
+    }
+
+    #[test]
+    fn extract_matches_expected_name_case_insensitively() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = core_extension();
+        let stored_name = format!("NESTopia_Libretro.{ext}");
+        let expected = dir.path().join(&stored_name);
+        let zip_bytes = make_zip(&[(&stored_name, b"core")]);
+
+        let path = extract_core_archive(zip_bytes, dir.path(), &format!("nestopia_libretro.{ext}"))
+            .unwrap();
+        assert_eq!(path, expected);
+    }
+
+    #[test]
+    fn extract_skips_path_traversal_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = core_extension();
+        let zip_bytes = make_zip(&[
+            (&format!("../evil.{ext}"), b"boom"),
+            (&format!("mgba_libretro.{ext}"), b"core"),
+        ]);
+
+        extract_core_archive(zip_bytes, dir.path(), &format!("mgba_libretro.{ext}")).unwrap();
+        assert!(
+            !dir.path()
+                .parent()
+                .unwrap()
+                .join(format!("evil.{ext}"))
+                .exists()
+        );
+        assert!(dir.path().join(format!("mgba_libretro.{ext}")).exists());
+    }
+
+    #[test]
+    fn extract_rejects_zip_without_core_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_bytes = make_zip(&[("readme.txt", b"hello")]);
+
+        let err =
+            extract_core_archive(zip_bytes, dir.path(), "nestopia_libretro.dylib").unwrap_err();
+        assert!(err.contains(&format!("No .{} file found", core_extension())));
+    }
+
+    #[test]
+    fn extract_rejects_invalid_zip_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = extract_core_archive(b"garbage".to_vec(), dir.path(), "x.dylib").unwrap_err();
+        assert!(err.contains("Invalid zip"));
     }
 }

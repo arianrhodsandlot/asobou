@@ -75,7 +75,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum CoreAction {
-    #[command(about = "List available and installed cores")]
+    #[command(about = "List installed cores")]
     List,
     #[command(about = "Install a core from buildbot.libretro.com")]
     Install {
@@ -85,7 +85,7 @@ enum CoreAction {
     Update {
         name: Option<String>,
     },
-    #[command(about = "Remove an installed managed core")]
+    #[command(about = "Remove an installed core")]
     Remove {
         name: String,
     },

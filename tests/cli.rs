@@ -87,26 +87,34 @@ fn core_list_shows_header() {
 }
 
 #[test]
-fn core_install_unknown_core_fails() {
+fn core_list_shows_arbitrary_installed_cores() {
     let dir = tempfile::tempdir().unwrap();
-    let (_stdout, stderr, code) =
-        run_in(Some(dir.path()), &["core", "install", "nonexistent_core"]);
+    let cores = dir.path().join("asoby").join("cores");
+    std::fs::create_dir_all(&cores).unwrap();
+    let ext = match std::env::consts::OS {
+        "macos" => "dylib",
+        "windows" => "dll",
+        _ => "so",
+    };
+    std::fs::write(cores.join(format!("fceumm_libretro.{ext}")), b"").unwrap();
+
+    let (stdout, _stderr, code) = run_in(Some(dir.path()), &["core", "list"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("fceumm"));
+}
+
+#[test]
+fn core_install_rejects_invalid_names_without_network() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_stdout, stderr, code) = run_in(Some(dir.path()), &["core", "install", "a/b"]);
     assert_ne!(code, 0);
-    assert!(stderr.contains("Unknown core"));
+    assert!(stderr.contains("Invalid core name"));
 }
 
 #[test]
 fn core_remove_unknown_core_is_noop() {
     let dir = tempfile::tempdir().unwrap();
     let (_stdout, stderr, code) = run_in(Some(dir.path()), &["core", "remove", "nonexistent_core"]);
-    assert_ne!(code, 0);
-    assert!(stderr.contains("Unknown core"));
-}
-
-#[test]
-fn core_remove_uninstalled_core_is_noop() {
-    let dir = tempfile::tempdir().unwrap();
-    let (_stdout, stderr, code) = run_in(Some(dir.path()), &["core", "remove", "nestopia"]);
     assert_eq!(code, 0);
     assert!(stderr.contains("not installed"));
 }

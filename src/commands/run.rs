@@ -91,24 +91,16 @@ fn resolve_core(
             || input_path.parent() == Some(Path::new(""));
 
         if is_name {
-            if let Some(core) = crate::cores::find_core(input) {
-                if !crate::cores::is_installed(core, cores_dir) {
-                    crate::cores::download_and_install(core, cores_dir, false)?;
-                }
-                return Ok(crate::cores::resolve_core_library_path(
-                    core.artifact,
-                    cores_dir,
-                ));
-            }
-
             let candidate =
                 crate::cores::resolve_core_path(Some(input_path), cores_dir, default_name);
             if candidate.exists() {
                 return Ok(candidate);
             }
-            return Err(format!(
-                "Unknown core: '{input}'. Use 'asoby core list' to see available cores."
-            ));
+
+            if !crate::cores::is_installed(input, cores_dir) {
+                crate::cores::download_and_install(input, cores_dir, false)?;
+            }
+            return Ok(crate::cores::resolve_core_library_path(input, cores_dir));
         }
 
         let candidate = crate::cores::resolve_core_path(Some(input_path), cores_dir, default_name);
@@ -119,21 +111,13 @@ fn resolve_core(
     }
 
     // No --core provided: detect from ROM, then ensure installed
-    let detection = crate::cores::detect_rom(std::path::Path::new(default_name), None);
+    let detection = crate::cores::detect_rom(std::path::Path::new(default_name));
     match detection {
         crate::cores::Detection::Detected { core_name } => {
-            if core_name.is_empty() {
-                return Err("Could not detect system for this ROM. Use --core to specify a core.".to_string());
+            if !crate::cores::is_installed(core_name, cores_dir) {
+                crate::cores::download_and_install(core_name, cores_dir, false)?;
             }
-            let core = crate::cores::find_core(core_name).unwrap();
-
-            if !crate::cores::is_installed(core, cores_dir) {
-                crate::cores::download_and_install(core, cores_dir, false)?;
-            }
-            Ok(crate::cores::resolve_core_library_path(
-                core.artifact,
-                cores_dir,
-            ))
+            Ok(crate::cores::resolve_core_library_path(core_name, cores_dir))
         }
         crate::cores::Detection::Ambiguous { candidates } => {
             let mut msg =

@@ -128,58 +128,41 @@ static SYSTEMS: LazyLock<Vec<System>> = LazyLock::new(|| {
     ]
 });
 
-// ── Core registry ──────────────────────────────────────────────────────────
+// ── Core names ─────────────────────────────────────────────────────────────
 
-pub struct CoreEntry {
-    pub name: &'static str,
-    pub artifact: &'static str,
+fn normalize_core_name(name: &str) -> String {
+    name.trim().to_lowercase()
 }
 
-static CORES: LazyLock<Vec<CoreEntry>> = LazyLock::new(|| {
-    vec![
-        CoreEntry {
-            name: "nestopia",
-            artifact: "nestopia",
-        },
-        CoreEntry {
-            name: "snes9x",
-            artifact: "snes9x",
-        },
-        CoreEntry {
-            name: "genesis_plus_gx",
-            artifact: "genesis_plus_gx",
-        },
-        CoreEntry {
-            name: "picodrive",
-            artifact: "picodrive",
-        },
-        CoreEntry {
-            name: "mgba",
-            artifact: "mgba",
-        },
-        CoreEntry {
-            name: "stella",
-            artifact: "stella",
-        },
-        CoreEntry {
-            name: "a5200",
-            artifact: "a5200",
-        },
-    ]
-});
-
-pub fn find_core(name: &str) -> Option<&'static CoreEntry> {
-    CORES.iter().find(|c| c.name.eq_ignore_ascii_case(name))
+fn validate_core_name(name: &str) -> Result<String, String> {
+    let name = normalize_core_name(name);
+    if name.is_empty() {
+        return Err("Empty core name".to_string());
+    }
+    if name.contains('/') || name.contains('\\') || name == "." || name == ".." {
+        return Err(format!("Invalid core name: '{name}'"));
+    }
+    Ok(name)
 }
 
-pub fn is_installed(core: &CoreEntry, dir: &Path) -> bool {
-    let ext = core_extension();
-    let path = dir.join(format!("{}_libretro.{}", core.artifact, ext));
-    path.exists()
+pub fn is_installed(name: &str, dir: &Path) -> bool {
+    resolve_core_library_path(name, dir).exists()
 }
 
-pub fn installed_cores(dir: &Path) -> Vec<&'static CoreEntry> {
-    CORES.iter().filter(|c| is_installed(c, dir)).collect()
+pub fn installed_cores(dir: &Path) -> Vec<String> {
+    let suffix = format!("_libretro.{}", core_extension());
+    let mut names = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if let Some(stem) = fname.strip_suffix(&suffix) {
+                names.push(stem.to_lowercase());
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
 }
 
 // ── ROM detection ──────────────────────────────────────────────────────────
@@ -190,16 +173,7 @@ pub enum Detection {
     Unknown,
 }
 
-pub fn detect_rom(rom_path: &Path, explicit_core: Option<&str>) -> Detection {
-    if let Some(core_name) = explicit_core {
-        if let Some(core) = find_core(core_name) {
-            return Detection::Detected {
-                core_name: core.name,
-            };
-        }
-        return Detection::Detected { core_name: "" };
-    }
-
+pub fn detect_rom(rom_path: &Path) -> Detection {
     let ext = rom_path
         .extension()
         .and_then(|e| e.to_str())
@@ -353,7 +327,11 @@ pub fn resolve_core_path(
 }
 
 pub fn resolve_core_library_path(name: &str, dir: &Path) -> PathBuf {
-    dir.join(format!("{}_libretro.{}", name, core_extension()))
+    dir.join(format!(
+        "{}_libretro.{}",
+        normalize_core_name(name),
+        core_extension()
+    ))
 }
 
 // ── Download & install ─────────────────────────────────────────────────────
@@ -361,17 +339,18 @@ pub fn resolve_core_library_path(name: &str, dir: &Path) -> PathBuf {
 const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024; // 256 MB
 
 pub fn download_and_install(
-    core: &CoreEntry,
+    name: &str,
     cores_dir: &Path,
     quiet: bool,
 ) -> Result<PathBuf, String> {
+    let name = validate_core_name(name)?;
     let base = buildbot_base_url()
         .ok_or_else(|| "Auto-download not supported on this platform".to_string())?;
     let ext = core_extension();
-    let url = format!("{}{}_libretro.{}.zip", base, core.artifact, ext);
+    let url = format!("{}{}_libretro.{}.zip", base, name, ext);
 
     if !quiet {
-        eprintln!("Downloading {} core...", core.name);
+        eprintln!("Downloading {name} core...");
         eprintln!("  From: {url}");
     }
 
@@ -383,9 +362,8 @@ pub fn download_and_install(
 
     if resp.status() != 200 {
         return Err(format!(
-            "HTTP {} — core '{}' not found on buildbot",
-            resp.status(),
-            core.name
+            "HTTP {} — core '{name}' not found on buildbot",
+            resp.status()
         ));
     }
 
@@ -414,7 +392,7 @@ pub fn download_and_install(
         return Err("Download exceeded maximum size".to_string());
     }
 
-    let expected_name = format!("{}_libretro.{}", core.artifact, ext);
+    let expected_name = format!("{}_libretro.{}", name, ext);
     if data.len() as u64 > MAX_DOWNLOAD_BYTES {
         return Err("Download exceeded maximum size".to_string());
     }
@@ -506,8 +484,9 @@ fn extract_core_archive(
     }
 }
 
-pub fn remove_core_file(core: &CoreEntry, dir: &Path) -> Result<(), String> {
-    let path = resolve_core_library_path(core.artifact, dir);
+pub fn remove_core_file(name: &str, dir: &Path) -> Result<(), String> {
+    let name = validate_core_name(name)?;
+    let path = resolve_core_library_path(&name, dir);
     if path.exists() {
         fs::remove_file(&path).map_err(|e| format!("Failed to remove core: {e}"))?;
     }
@@ -637,7 +616,7 @@ mod tests {
         let rom = dir.path().join("game.bin");
         fs::write(&rom, b"NES\x1a\x02\x03\x04").unwrap();
 
-        let Detection::Detected { core_name } = detect_rom(&rom, None) else {
+        let Detection::Detected { core_name } = detect_rom(&rom) else {
             panic!("expected a detected core");
         };
         assert_eq!(core_name, "nestopia");
@@ -646,33 +625,10 @@ mod tests {
     #[test]
     fn extension_detection_does_not_require_the_file() {
         let dir = tempfile::tempdir().unwrap();
-        let Detection::Detected { core_name } = detect_rom(&dir.path().join("missing.nes"), None)
-        else {
+        let Detection::Detected { core_name } = detect_rom(&dir.path().join("missing.nes")) else {
             panic!("expected a detected core");
         };
         assert_eq!(core_name, "nestopia");
-    }
-
-    #[test]
-    fn explicit_core_overrides_detection() {
-        let dir = tempfile::tempdir().unwrap();
-        let Detection::Detected { core_name } =
-            detect_rom(&dir.path().join("game.nes"), Some("snes9x"))
-        else {
-            panic!("expected a detected core");
-        };
-        assert_eq!(core_name, "snes9x");
-    }
-
-    #[test]
-    fn unknown_explicit_core_yields_empty_core_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let Detection::Detected { core_name } =
-            detect_rom(&dir.path().join("game.nes"), Some("nope"))
-        else {
-            panic!("expected a detected core");
-        };
-        assert_eq!(core_name, "");
     }
 
     // ── Zip introspection ──────────────────────────────────────────────────
@@ -683,7 +639,7 @@ mod tests {
         let zip_path = dir.path().join("game.zip");
         fs::write(&zip_path, make_zip(&[("game.sfc", b"ROM")])).unwrap();
 
-        let Detection::Detected { core_name } = detect_rom(&zip_path, None) else {
+        let Detection::Detected { core_name } = detect_rom(&zip_path) else {
             panic!("expected a detected core");
         };
         assert_eq!(core_name, "snes9x");
@@ -695,7 +651,7 @@ mod tests {
         let zip_path = dir.path().join("game.zip");
         fs::write(&zip_path, make_zip(&[("GAME.SFC", b"ROM")])).unwrap();
 
-        let Detection::Detected { core_name } = detect_rom(&zip_path, None) else {
+        let Detection::Detected { core_name } = detect_rom(&zip_path) else {
             panic!("expected a detected core");
         };
         assert_eq!(core_name, "snes9x");
@@ -707,7 +663,7 @@ mod tests {
         let zip_path = dir.path().join("multi.zip");
         fs::write(&zip_path, make_zip(&[("a.nes", b"1"), ("b.sfc", b"2")])).unwrap();
 
-        let Detection::Ambiguous { candidates } = detect_rom(&zip_path, None) else {
+        let Detection::Ambiguous { candidates } = detect_rom(&zip_path) else {
             panic!("expected ambiguous core candidates");
         };
         assert_eq!(candidates, vec!["nestopia", "snes9x"]);
@@ -719,7 +675,7 @@ mod tests {
         let zip_path = dir.path().join("data.zip");
         fs::write(&zip_path, make_zip(&[("readme.txt", b"hi")])).unwrap();
 
-        assert!(matches!(detect_rom(&zip_path, None), Detection::Unknown));
+        assert!(matches!(detect_rom(&zip_path), Detection::Unknown));
     }
 
     #[test]
@@ -728,7 +684,7 @@ mod tests {
         let zip_path = dir.path().join("broken.zip");
         fs::write(&zip_path, b"not a zip").unwrap();
 
-        assert!(matches!(detect_rom(&zip_path, None), Detection::Unknown));
+        assert!(matches!(detect_rom(&zip_path), Detection::Unknown));
     }
 
     // ── Core file operations ───────────────────────────────────────────────
@@ -740,9 +696,21 @@ mod tests {
         fs::write(dir.path().join(format!("nestopia_libretro.{ext}")), b"").unwrap();
 
         let installed = installed_cores(dir.path());
-        assert_eq!(installed.len(), 1);
-        assert_eq!(installed[0].name, "nestopia");
-        assert!(is_installed(installed[0], dir.path()));
+        assert_eq!(installed, vec!["nestopia".to_string()]);
+        assert!(is_installed("nestopia", dir.path()));
+    }
+
+    #[test]
+    fn installed_cores_accepts_any_core_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = core_extension();
+        fs::write(dir.path().join(format!("fceumm_libretro.{ext}")), b"").unwrap();
+        fs::write(dir.path().join("readme.txt"), b"").unwrap();
+
+        let installed = installed_cores(dir.path());
+        assert_eq!(installed, vec!["fceumm".to_string()]);
+        assert!(is_installed("fceumm", dir.path()));
+        assert!(is_installed("FCEUMM", dir.path()));
     }
 
     #[test]
@@ -751,12 +719,11 @@ mod tests {
         let ext = core_extension();
         let stub = dir.path().join(format!("snes9x_libretro.{ext}"));
         fs::write(&stub, b"").unwrap();
-        let snes9x = find_core("snes9x").unwrap();
 
-        remove_core_file(snes9x, dir.path()).unwrap();
+        remove_core_file("snes9x", dir.path()).unwrap();
         assert!(!stub.exists());
 
-        remove_core_file(snes9x, dir.path()).unwrap();
+        remove_core_file("snes9x", dir.path()).unwrap();
     }
 
     #[test]

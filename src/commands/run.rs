@@ -91,15 +91,17 @@ fn resolve_core(
             || input_path.parent() == Some(Path::new(""));
 
         if is_name {
+            if crate::cores::is_installed(input, cores_dir) {
+                return Ok(crate::cores::resolve_core_library_path(input, cores_dir));
+            }
+
             let candidate =
                 crate::cores::resolve_core_path(Some(input_path), cores_dir, default_name);
             if candidate.exists() {
                 return Ok(candidate);
             }
 
-            if !crate::cores::is_installed(input, cores_dir) {
-                crate::cores::download_and_install(input, cores_dir, false)?;
-            }
+            crate::cores::download_and_install(input, cores_dir, false)?;
             return Ok(crate::cores::resolve_core_library_path(input, cores_dir));
         }
 

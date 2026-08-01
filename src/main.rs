@@ -12,7 +12,7 @@ use renderer::RendererMode;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "asoby", about = "Retro game emulator for the terminal", version, disable_version_flag = true)]
+#[command(name = "asoby", about = "Retro game emulator for the terminal", version, disable_version_flag = true, disable_help_subcommand = true)]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
@@ -66,7 +66,7 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    #[command(about = "Manage libretro cores")]
+    #[command(about = "Manage libretro cores", disable_help_subcommand = true)]
     Core {
         #[command(subcommand)]
         action: CoreAction,

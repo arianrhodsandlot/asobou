@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 static RUNNING: AtomicBool = AtomicBool::new(true);
 const TERMINAL_INPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 const TERMINAL_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const STATUS_MESSAGE_DURATION: Duration = Duration::from_secs(2);
 
 struct LatestFrameMailbox {
     state: Mutex<LatestFrameState>,
@@ -87,8 +88,7 @@ fn resolve_core(
             return Ok(input_path.to_path_buf());
         }
 
-        let is_name = input_path.parent().is_none()
-            || input_path.parent() == Some(Path::new(""));
+        let is_name = input_path.parent().is_none() || input_path.parent() == Some(Path::new(""));
 
         if is_name {
             if crate::cores::is_installed(input, cores_dir) {
@@ -119,7 +119,9 @@ fn resolve_core(
             if !crate::cores::is_installed(core_name, cores_dir) {
                 crate::cores::download_and_install(core_name, cores_dir, false)?;
             }
-            Ok(crate::cores::resolve_core_library_path(core_name, cores_dir))
+            Ok(crate::cores::resolve_core_library_path(
+                core_name, cores_dir,
+            ))
         }
         crate::cores::Detection::Ambiguous { candidates } => {
             let mut msg =
@@ -151,6 +153,8 @@ pub struct RunConfig {
     pub rom: PathBuf,
     pub input_bindings: crate::input::InputBindings,
     pub rewind: crate::config::RewindSettings,
+    pub startup_state: Option<PathBuf>,
+    pub save_on_exit: bool,
 }
 
 struct TerminalGuard {
@@ -225,8 +229,38 @@ fn rewind_run_frame(core: &crate::emulation::libretro::Core, frame_mailbox: &Lat
     }
 }
 
+fn format_status_line(status: &str, message: Option<&str>, width: usize) -> String {
+    let mut line = String::new();
+    if let Some(message) = message {
+        line.push_str(message);
+        line.push_str("  ");
+    }
+    line.push_str(status);
+    line.chars().take(width).collect()
+}
+
 pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
-    ctrlc::set_handler(|| std::process::exit(0))?;
+    let RunConfig {
+        renderer: renderer_mode,
+        core: core_arg,
+        render_fps,
+        no_alt_screen,
+        muted,
+        rom,
+        input_bindings,
+        rewind: rewind_settings,
+        startup_state,
+        save_on_exit,
+    } = config;
+
+    if let Some(state_path) = &startup_state
+        && !state_path.exists()
+    {
+        eprintln!("Error: state file not found: {}", state_path.display());
+        std::process::exit(1);
+    }
+
+    ctrlc::set_handler(|| RUNNING.store(false, Ordering::SeqCst))?;
     RUNNING.store(true, Ordering::SeqCst);
     crate::emulation::libretro::set_joypad_buttons(0);
 
@@ -234,9 +268,9 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&cores_dir).ok();
 
     let core_path = match resolve_core(
-        config.core.as_deref(),
+        core_arg.as_deref(),
         &cores_dir,
-        config.rom.to_string_lossy().as_ref(),
+        rom.to_string_lossy().as_ref(),
     ) {
         Ok(p) => p,
         Err(e) => {
@@ -249,14 +283,14 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    if !config.rom.exists() {
-        eprintln!("Error: file not found: {}", config.rom.display());
+    if !rom.exists() {
+        eprintln!("Error: file not found: {}", rom.display());
         std::process::exit(1);
     }
 
-    let renderer = crate::renderer::create(config.renderer, &config.rom, config.no_alt_screen)?;
+    let renderer = crate::renderer::create(renderer_mode, &rom, no_alt_screen)?;
     let core = unsafe { crate::emulation::libretro::load_core(&core_path)? };
-    let mut audio_backend = if config.muted {
+    let mut audio_backend = if muted {
         crate::audio::muted()
     } else {
         crate::audio::output()
@@ -279,11 +313,41 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         let mut sys_info: crate::emulation::libretro::RetroSystemInfo = mem::zeroed();
         (core.retro_get_system_info)(&mut sys_info);
 
-        let loaded = crate::emulation::libretro::load_rom(&core, &config.rom)?;
+        let loaded = crate::emulation::libretro::load_rom(&core, &rom)?;
         if !loaded {
-            eprintln!("Failed to load ROM: {}", config.rom.display());
+            eprintln!("Failed to load ROM: {}", rom.display());
             (core.retro_deinit)();
             return Ok(());
+        }
+
+        let serialization_supported = core.supports_complete_serialization();
+        if !serialization_supported {
+            eprintln!("Save states and rewind disabled: core does not support complete savestates");
+        }
+        let state_size = core.state_size().unwrap_or(0);
+        let core_name = crate::emulation::state::core_name_from_path(&core_path);
+        let game_name = rom
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if let Some(startup) = &startup_state {
+            if !serialization_supported {
+                eprintln!(
+                    "Error: core does not support savestates, cannot load {}",
+                    startup.display()
+                );
+                (core.retro_unload_game)();
+                (core.retro_deinit)();
+                std::process::exit(1);
+            }
+            if let Err(error) = crate::emulation::state::load_from_path(
+                &core, startup, &core_name, &game_name, state_size,
+            ) {
+                eprintln!("Error: failed to load state {}: {error}", startup.display());
+                (core.retro_unload_game)();
+                (core.retro_deinit)();
+                std::process::exit(1);
+            }
         }
 
         let mut av_info: crate::emulation::libretro::RetroSystemAvInfo = mem::zeroed();
@@ -304,12 +368,25 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         let mut renderer = renderer;
         renderer.setup(w, h);
 
+        let mut rewind = if rewind_settings.enabled && serialization_supported {
+            crate::emulation::rewind::Rewind::new(
+                state_size,
+                rewind_settings.granularity,
+                rewind_settings.buffer_size,
+            )
+        } else {
+            None
+        };
+        if let Some(rewind) = rewind.as_mut() {
+            rewind.capture(&core, 0);
+        }
+
         let terminal = TerminalGuard::enter()?;
-        let status = config.input_bindings.status_line();
-        let rewind_settings = config.rewind;
-        let input_bindings = config.input_bindings;
+        let status = input_bindings.status_line();
         let frame_mailbox = Arc::new(LatestFrameMailbox::new());
         let render_mailbox = Arc::clone(&frame_mailbox);
+        let status_messages = Arc::new(Mutex::new(None::<(String, Instant)>));
+        let status_messages_render = Arc::clone(&status_messages);
         let render_thread = thread::spawn(move || -> io::Result<()> {
             let mut renderer = renderer;
             let mut stdout = io::stdout().lock();
@@ -318,7 +395,20 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
                     renderer.render(&frame, &mut stdout)?;
                     let (columns, rows) = crossterm::terminal::size()?;
                     let width = usize::from(columns);
-                    write!(stdout, "\x1b[{};1H\x1b[K{status:.width$}", rows)?;
+                    let message = {
+                        let mut guard = status_messages_render.lock().unwrap();
+                        match &*guard {
+                            Some((text, at)) if at.elapsed() < STATUS_MESSAGE_DURATION => {
+                                Some(text.clone())
+                            }
+                            _ => {
+                                *guard = None;
+                                None
+                            }
+                        }
+                    };
+                    let line = format_status_line(&status, message.as_deref(), width);
+                    write!(stdout, "\x1b[{};1H\x1b[K{line:.width$}", rows)?;
                     stdout.flush()?;
                 }
                 Ok(())
@@ -335,7 +425,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             60.0
         };
         let frame_duration = Duration::from_secs_f64(1.0 / fps);
-        let render_duration = Duration::from_secs_f64(1.0 / config.render_fps as f64);
+        let render_duration = Duration::from_secs_f64(1.0 / render_fps as f64);
         let schedule_start = Instant::now();
         let mut next_frame = schedule_start;
         let mut next_render = schedule_start;
@@ -344,29 +434,11 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             terminal.release_events_supported,
         );
         let mut input_error = None;
-
-        let mut rewind = if rewind_settings.enabled
-            && crate::emulation::libretro::serialization_quirks()
-                & crate::emulation::libretro::RETRO_SERIALIZATION_QUIRK_INCOMPLETE
-                == 0
-        {
-            let state_size = core
-                .retro_serialize_size
-                .map_or(0, |size_fn| size_fn());
-            crate::emulation::rewind::Rewind::new(
-                state_size,
-                rewind_settings.granularity,
-                rewind_settings.buffer_size,
-            )
-        } else {
-            None
+        let set_message = |text: &str| {
+            if let Ok(mut guard) = status_messages.lock() {
+                *guard = Some((text.to_string(), Instant::now()));
+            }
         };
-        if rewind.is_none() && rewind_settings.enabled {
-            eprintln!("Rewind disabled: core does not support savestates");
-        }
-        if let Some(rewind) = rewind.as_mut() {
-            rewind.capture(&core, 0);
-        }
         let mut frame_count = 0u64;
 
         while RUNNING.load(Ordering::SeqCst) {
@@ -399,6 +471,25 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             input.expire(Instant::now());
+            if serialization_supported {
+                if input.take_save() {
+                    match crate::emulation::state::save_state(
+                        &core, state_size, &core_name, &game_name,
+                    ) {
+                        Ok(_) => set_message("State saved"),
+                        Err(error) => set_message(&format!("Save failed: {error}")),
+                    }
+                }
+                if input.take_load() {
+                    match crate::emulation::state::load_newest(
+                        &core, &core_name, &game_name, state_size,
+                    ) {
+                        Ok(Some(_)) => set_message("State loaded"),
+                        Ok(None) => set_message("No save state found"),
+                        Err(error) => set_message(&format!("Load failed: {error}")),
+                    }
+                }
+            }
             crate::emulation::libretro::set_joypad_buttons(input.button_mask());
             if !RUNNING.load(Ordering::SeqCst) {
                 break;
@@ -407,11 +498,9 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             let rewound = if input.rewind_pressed() {
                 if let Some(rewind) = rewind.as_mut() {
                     crate::emulation::libretro::set_audio_muted(true);
-                    let target = rewind.rewind(
-                        &core,
-                        frame_count,
-                        &mut || rewind_run_frame(&core, &frame_mailbox),
-                    );
+                    let target = rewind.rewind(&core, frame_count, &mut || {
+                        rewind_run_frame(&core, &frame_mailbox)
+                    });
                     crate::emulation::libretro::set_audio_muted(false);
                     match target {
                         Some(target) => {
@@ -472,6 +561,13 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             Err(_) => return Err(io::Error::other("renderer thread panicked").into()),
         }
         drop(terminal);
+
+        if serialization_supported && save_on_exit {
+            match crate::emulation::state::save_state(&core, state_size, &core_name, &game_name) {
+                Ok(path) => println!("Saved state: {}", path.display()),
+                Err(error) => eprintln!("Warning: failed to save state on exit: {error}"),
+            }
+        }
 
         if let Ok(mut audio) = crate::emulation::libretro::AUDIO.lock() {
             audio.take();
@@ -544,5 +640,20 @@ mod tests {
 
         assert!(wanted);
         assert!(receiver.join().unwrap().is_none());
+    }
+
+    #[test]
+    fn status_line_shows_the_message_before_the_controls() {
+        let controls = "↑-up ↓-down ←-left →-right Select-rshift Start-enter X-s Y-a A-x B-z Exit-escape Rewind-r Save-f2 Load-f4";
+
+        let line = format_status_line(controls, Some("State saved"), 80);
+
+        assert!(line.starts_with("State saved  ↑-up"));
+        assert_eq!(line.chars().count(), 80);
+    }
+
+    #[test]
+    fn status_line_without_a_message_is_not_padded() {
+        assert_eq!(format_status_line("Exit-escape", None, 20), "Exit-escape");
     }
 }

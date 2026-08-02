@@ -99,6 +99,33 @@ pub struct Core {
     pub retro_unserialize: Option<unsafe extern "C" fn(*const c_void, usize) -> bool>,
 }
 
+impl Core {
+    pub fn supports_complete_serialization(&self) -> bool {
+        serialization_quirks() & RETRO_SERIALIZATION_QUIRK_INCOMPLETE == 0
+            && self.retro_serialize.is_some()
+            && self.retro_unserialize.is_some()
+            && self.state_size().is_some_and(|size| size > 0)
+    }
+
+    pub fn state_size(&self) -> Option<usize> {
+        self.retro_serialize_size.map(|size| unsafe { size() })
+    }
+
+    pub fn serialize_state(&self, data: &mut [u8]) -> bool {
+        let Some(serialize) = self.retro_serialize else {
+            return false;
+        };
+        unsafe { serialize(data.as_mut_ptr() as *mut c_void, data.len()) }
+    }
+
+    pub fn unserialize_state(&self, data: &[u8]) -> bool {
+        let Some(unserialize) = self.retro_unserialize else {
+            return false;
+        };
+        unsafe { unserialize(data.as_ptr() as *const c_void, data.len()) }
+    }
+}
+
 pub static FRAME: Mutex<Option<Arc<Frame>>> = Mutex::new(None);
 pub static AUDIO: Mutex<Option<Box<dyn AudioSink + Send>>> = Mutex::new(None);
 static PIXEL_FORMAT: AtomicU32 = AtomicU32::new(PixelFormat::ZeroRgb1555 as u32);
@@ -154,7 +181,8 @@ pub unsafe fn load_core(path: &Path) -> Result<Core, Box<dyn std::error::Error>>
         },
         retro_run: *unsafe { lib.get(b"retro_run")? },
         retro_unload_game: *unsafe { lib.get(b"retro_unload_game")? },
-        retro_serialize_size: unsafe { lib.get(b"retro_serialize_size").ok() }.map(|symbol| *symbol),
+        retro_serialize_size: unsafe { lib.get(b"retro_serialize_size").ok() }
+            .map(|symbol| *symbol),
         retro_serialize: unsafe { lib.get(b"retro_serialize").ok() }.map(|symbol| *symbol),
         retro_unserialize: unsafe { lib.get(b"retro_unserialize").ok() }.map(|symbol| *symbol),
         _lib: lib,
@@ -423,9 +451,10 @@ unsafe extern "C" fn audio_sample(left: i16, right: i16) {
         return;
     }
     if let Ok(mut guard) = AUDIO.lock()
-        && let Some(ref mut sink) = *guard {
-            sink.push(&[left, right]);
-        }
+        && let Some(ref mut sink) = *guard
+    {
+        sink.push(&[left, right]);
+    }
 }
 
 unsafe extern "C" fn audio_sample_batch(data: *const i16, frames: usize) -> usize {
@@ -436,10 +465,11 @@ unsafe extern "C" fn audio_sample_batch(data: *const i16, frames: usize) -> usiz
         return frames;
     }
     if let Ok(mut guard) = AUDIO.lock()
-        && let Some(ref mut backend) = *guard {
-            let samples = unsafe { std::slice::from_raw_parts(data, frames * 2) };
-            backend.push(samples);
-        }
+        && let Some(ref mut backend) = *guard
+    {
+        let samples = unsafe { std::slice::from_raw_parts(data, frames * 2) };
+        backend.push(samples);
+    }
     frames
 }
 

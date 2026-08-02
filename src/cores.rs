@@ -338,11 +338,7 @@ pub fn resolve_core_library_path(name: &str, dir: &Path) -> PathBuf {
 
 const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024; // 256 MB
 
-pub fn download_and_install(
-    name: &str,
-    cores_dir: &Path,
-    quiet: bool,
-) -> Result<PathBuf, String> {
+pub fn download_and_install(name: &str, cores_dir: &Path, quiet: bool) -> Result<PathBuf, String> {
     let name = validate_core_name(name)?;
     let base = buildbot_base_url()
         .ok_or_else(|| "Auto-download not supported on this platform".to_string())?;

@@ -123,7 +123,11 @@ mod tests {
             KeyCode::Char('\\'),
         ];
         let mut previous = None;
-        assert!(codes.iter().any(|&code| watch_response(&mut previous, code)));
+        assert!(
+            codes
+                .iter()
+                .any(|&code| watch_response(&mut previous, code))
+        );
     }
 
     #[test]
@@ -136,18 +140,22 @@ mod tests {
             KeyCode::Char('R'),
         ];
         let mut previous = None;
-        assert!(!codes.iter().any(|&code| watch_response(&mut previous, code)));
+        assert!(
+            !codes
+                .iter()
+                .any(|&code| watch_response(&mut previous, code))
+        );
     }
 
     #[test]
     fn non_char_events_reset_the_sequence() {
-        let codes = [
-            KeyCode::Char('O'),
-            KeyCode::Char('x'),
-            KeyCode::Char('K'),
-        ];
+        let codes = [KeyCode::Char('O'), KeyCode::Char('x'), KeyCode::Char('K')];
         let mut previous = None;
-        assert!(!codes.iter().any(|&code| watch_response(&mut previous, code)));
+        assert!(
+            !codes
+                .iter()
+                .any(|&code| watch_response(&mut previous, code))
+        );
     }
 
     #[test]

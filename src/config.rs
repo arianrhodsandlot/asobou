@@ -11,6 +11,18 @@ use std::path::{Path, PathBuf};
 struct Config {
     input: InputConfig,
     rewind: RewindConfig,
+    state: StateConfig,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct StateConfig {
+    save_on_exit: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct StateSettings {
+    pub save_on_exit: bool,
 }
 
 #[derive(Deserialize)]
@@ -42,6 +54,7 @@ pub struct RewindSettings {
 pub struct Settings {
     pub input_bindings: crate::input::InputBindings,
     pub rewind: RewindSettings,
+    pub state: StateSettings,
 }
 
 #[derive(Deserialize)]
@@ -65,6 +78,8 @@ struct InputConfig {
     r3: Option<String>,
     quit: String,
     rewind: String,
+    save_state: String,
+    load_state: String,
 }
 
 impl Default for InputConfig {
@@ -88,6 +103,8 @@ impl Default for InputConfig {
             r3: None,
             quit: "escape".into(),
             rewind: "r".into(),
+            save_state: "f2".into(),
+            load_state: "f4".into(),
         }
     }
 }
@@ -200,6 +217,9 @@ fn load_settings_from(path: &Path) -> Result<Settings, ConfigError> {
                     granularity: 2,
                     buffer_size: 20 * 1024 * 1024,
                 },
+                state: StateSettings {
+                    save_on_exit: false,
+                },
             });
         }
         Err(source) => {
@@ -257,15 +277,24 @@ fn parse_settings(contents: &str, path: &Path) -> Result<Settings, ConfigError> 
         }
     }
 
-    let input_bindings =
-        crate::input::InputBindings::new(&gamepad, &input.quit, &input.rewind, rewind.enabled)
-            .map_err(|reason| ConfigError::Invalid {
-                path: path.to_path_buf(),
-                reason,
-            })?;
+    let input_bindings = crate::input::InputBindings::new(
+        &gamepad,
+        &input.quit,
+        &input.rewind,
+        &input.save_state,
+        &input.load_state,
+        rewind.enabled,
+    )
+    .map_err(|reason| ConfigError::Invalid {
+        path: path.to_path_buf(),
+        reason,
+    })?;
     Ok(Settings {
         input_bindings,
         rewind,
+        state: StateSettings {
+            save_on_exit: config.state.save_on_exit,
+        },
     })
 }
 
@@ -351,8 +380,8 @@ mod tests {
 
     #[test]
     fn rewind_can_be_disabled() {
-        let settings = parse_settings("[rewind]\nenabled = false\n", Path::new("config.toml"))
-            .unwrap();
+        let settings =
+            parse_settings("[rewind]\nenabled = false\n", Path::new("config.toml")).unwrap();
 
         assert!(!settings.rewind.enabled);
         assert!(!settings.input_bindings.rewind_enabled());
@@ -373,8 +402,8 @@ mod tests {
 
     #[test]
     fn zero_granularity_is_rejected() {
-        let error = parse_settings("[rewind]\ngranularity = 0\n", Path::new("config.toml"))
-            .unwrap_err();
+        let error =
+            parse_settings("[rewind]\ngranularity = 0\n", Path::new("config.toml")).unwrap_err();
 
         assert!(error.to_string().contains("granularity"));
     }
@@ -382,25 +411,63 @@ mod tests {
     #[test]
     fn zero_buffer_size_is_rejected() {
         let error =
-            parse_settings("[rewind]\nbuffer_size_mb = 0\n", Path::new("config.toml"))
-                .unwrap_err();
+            parse_settings("[rewind]\nbuffer_size_mb = 0\n", Path::new("config.toml")).unwrap_err();
 
         assert!(error.to_string().contains("buffer_size_mb"));
     }
 
     #[test]
     fn duplicate_keys_are_rejected() {
-        let error =
-            parse_settings("[input]\na = \"z\"\n", Path::new("config.toml")).unwrap_err();
+        let error = parse_settings("[input]\na = \"z\"\n", Path::new("config.toml")).unwrap_err();
 
         assert!(error.to_string().contains("already bound"));
     }
 
     #[test]
     fn combinations_are_rejected() {
-        let error = parse_settings("[input]\na = \"ctrl+x\"\n", Path::new("config.toml"))
-            .unwrap_err();
+        let error =
+            parse_settings("[input]\na = \"ctrl+x\"\n", Path::new("config.toml")).unwrap_err();
 
         assert!(error.to_string().contains("key combinations"));
+    }
+
+    #[test]
+    fn save_on_exit_defaults_to_false() {
+        let settings =
+            parse_settings("[rewind]\nenabled = false\n", Path::new("config.toml")).unwrap();
+
+        assert!(!settings.state.save_on_exit);
+    }
+
+    #[test]
+    fn save_on_exit_parses_when_enabled() {
+        let settings =
+            parse_settings("[state]\nsave_on_exit = true\n", Path::new("config.toml")).unwrap();
+
+        assert!(settings.state.save_on_exit);
+    }
+
+    #[test]
+    fn save_and_load_bindings_are_configurable() {
+        let settings = parse_settings(
+            "[input]\nsave_state = \"f1\"\nload_state = \"f3\"\n",
+            Path::new("config.toml"),
+        )
+        .unwrap();
+
+        assert!(
+            settings
+                .input_bindings
+                .status_line()
+                .contains("Save-f1 Load-f3")
+        );
+    }
+
+    #[test]
+    fn unknown_state_config_fields_are_rejected() {
+        let error =
+            parse_settings("[state]\nprune = true\n", Path::new("config.toml")).unwrap_err();
+
+        assert!(error.to_string().contains("prune"));
     }
 }

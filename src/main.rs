@@ -12,7 +12,13 @@ use renderer::RendererMode;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "asoby", about = "Retro game emulator for the terminal", version, disable_version_flag = true, disable_help_subcommand = true)]
+#[command(
+    name = "asoby",
+    about = "Retro game emulator for the terminal",
+    version,
+    disable_version_flag = true,
+    disable_help_subcommand = true
+)]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
@@ -60,6 +66,13 @@ struct Args {
     )]
     version: (),
 
+    #[arg(
+        long = "state",
+        value_name = "PATH",
+        help = "Load a save state file after the core starts"
+    )]
+    state: Option<PathBuf>,
+
     #[arg(help = "Path to the ROM file to load")]
     rom: Option<PathBuf>,
 }
@@ -71,6 +84,11 @@ enum Command {
         #[command(subcommand)]
         action: CoreAction,
     },
+    #[command(about = "Manage save states", disable_help_subcommand = true)]
+    State {
+        #[command(subcommand)]
+        action: StateAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -78,16 +96,21 @@ enum CoreAction {
     #[command(about = "List installed cores")]
     List,
     #[command(about = "Install a core from buildbot.libretro.com")]
-    Install {
-        name: String,
-    },
+    Install { name: String },
     #[command(about = "Update installed cores from buildbot.libretro.com")]
-    Update {
-        name: Option<String>,
-    },
+    Update { name: Option<String> },
     #[command(about = "Remove an installed core")]
-    Remove {
-        name: String,
+    Remove { name: String },
+}
+
+#[derive(Subcommand)]
+enum StateAction {
+    #[command(about = "List managed save states")]
+    List {
+        #[arg(help = "Filter by the complete ROM filename")]
+        rom: Option<String>,
+        #[arg(long = "core", help = "Filter by core name")]
+        core: Option<String>,
     },
 }
 
@@ -108,6 +131,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             CoreAction::Remove { name } => {
                 return commands::core::remove(&name);
+            }
+        }
+    }
+
+    if let Some(Command::State { action }) = args.command {
+        match action {
+            StateAction::List { rom, core } => {
+                return commands::state::list(rom.as_deref(), core.as_deref());
             }
         }
     }
@@ -134,6 +165,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rom,
         input_bindings: settings.input_bindings,
         rewind: settings.rewind,
+        startup_state: args.state,
+        save_on_exit: settings.state.save_on_exit,
     };
     commands::run::run(config)
 }

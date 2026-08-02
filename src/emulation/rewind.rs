@@ -1,31 +1,5 @@
-use crate::emulation::libretro::Core;
-use flate2::Compression;
-use flate2::read::ZlibDecoder;
-use flate2::write::ZlibEncoder;
-use libc::c_void;
+use crate::emulation::state::{StateBackend, compress, decompress};
 use std::collections::VecDeque;
-use std::io::{Read, Write};
-
-pub trait StateBackend {
-    fn serialize(&self, data: &mut [u8]) -> bool;
-    fn unserialize(&self, data: &[u8]) -> bool;
-}
-
-impl StateBackend for Core {
-    fn serialize(&self, data: &mut [u8]) -> bool {
-        let Some(serialize) = self.retro_serialize else {
-            return false;
-        };
-        unsafe { serialize(data.as_mut_ptr() as *mut c_void, data.len()) }
-    }
-
-    fn unserialize(&self, data: &[u8]) -> bool {
-        let Some(unserialize) = self.retro_unserialize else {
-            return false;
-        };
-        unsafe { unserialize(data.as_ptr() as *const c_void, data.len()) }
-    }
-}
 
 pub struct Rewind {
     granularity: u64,
@@ -97,19 +71,6 @@ impl Rewind {
     }
 }
 
-fn compress(data: &[u8]) -> Vec<u8> {
-    let mut encoder = ZlibEncoder::new(Vec::with_capacity(data.len() / 4), Compression::default());
-    encoder.write_all(data).unwrap();
-    encoder.finish().unwrap()
-}
-
-fn decompress(data: &[u8], capacity: usize) -> Vec<u8> {
-    let mut decoder = ZlibDecoder::new(data);
-    let mut output = Vec::with_capacity(capacity);
-    decoder.read_to_end(&mut output).unwrap();
-    output
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,7 +115,9 @@ mod tests {
 
     #[test]
     fn captures_every_granularity_frames() {
-        let core = FakeCore { state: Cell::new(0) };
+        let core = FakeCore {
+            state: Cell::new(0),
+        };
         let mut rewind = Rewind::new(8, 2, 1024).unwrap();
         let frames = play(&core, &mut rewind, 6);
 
@@ -167,7 +130,9 @@ mod tests {
 
     #[test]
     fn rewind_restores_a_state_and_reruns_to_the_target() {
-        let core = FakeCore { state: Cell::new(0) };
+        let core = FakeCore {
+            state: Cell::new(0),
+        };
         let mut rewind = Rewind::new(8, 2, 1024).unwrap();
         play(&core, &mut rewind, 6);
         let mut runs = 0;
@@ -186,7 +151,9 @@ mod tests {
 
     #[test]
     fn repeated_rewinds_step_back_until_the_buffer_starts() {
-        let core = FakeCore { state: Cell::new(0) };
+        let core = FakeCore {
+            state: Cell::new(0),
+        };
         let mut rewind = Rewind::new(8, 2, 1024).unwrap();
         play(&core, &mut rewind, 6);
 
@@ -200,7 +167,9 @@ mod tests {
 
     #[test]
     fn rewinding_then_playing_forward_keeps_rewind_available() {
-        let core = FakeCore { state: Cell::new(0) };
+        let core = FakeCore {
+            state: Cell::new(0),
+        };
         let mut rewind = Rewind::new(8, 2, 1024).unwrap();
         let frame = play(&core, &mut rewind, 6);
         let target = rewind.rewind(&core, frame, &mut || step(&core)).unwrap();
@@ -222,7 +191,9 @@ mod tests {
 
     #[test]
     fn rewind_is_unavailable_before_granularity_frames() {
-        let core = FakeCore { state: Cell::new(0) };
+        let core = FakeCore {
+            state: Cell::new(0),
+        };
         let mut rewind = Rewind::new(8, 2, 1024).unwrap();
         rewind.capture(&core, 0);
         step(&core);
@@ -234,7 +205,9 @@ mod tests {
 
     #[test]
     fn budget_evicts_the_oldest_snapshots() {
-        let core = FakeCore { state: Cell::new(0) };
+        let core = FakeCore {
+            state: Cell::new(0),
+        };
         let mut rewind = Rewind::new(8, 1, 100).unwrap();
         play(&core, &mut rewind, 20);
 

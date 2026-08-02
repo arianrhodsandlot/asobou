@@ -44,6 +44,14 @@ impl KeyState {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct OneShotKey {
+    pressed: bool,
+    last_seen: Option<Instant>,
+    repeat_seen: bool,
+    pending: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct InputKey {
     code: KeyCode,
@@ -84,8 +92,7 @@ impl InputKey {
         }
 
         if is_keypad_name(&name) {
-            let code = parse_numpad_key(&name)
-                .ok_or_else(|| format!("unknown key: \"{name}\""))?;
+            let code = parse_numpad_key(&name).ok_or_else(|| format!("unknown key: \"{name}\""))?;
             return Ok(Self {
                 code: normalize_keypad_code(code),
                 keypad: true,
@@ -115,6 +122,10 @@ pub struct InputBindings {
     rewind: InputKey,
     rewind_name: String,
     rewind_enabled: bool,
+    save_state: InputKey,
+    save_state_name: String,
+    load_state: InputKey,
+    load_state_name: String,
 }
 
 impl InputBindings {
@@ -122,6 +133,8 @@ impl InputBindings {
         gamepad: &[(&str, usize, &str)],
         quit: &str,
         rewind: &str,
+        save_state: &str,
+        load_state: &str,
         rewind_enabled: bool,
     ) -> Result<Self, String> {
         let mut assigned = HashMap::new();
@@ -149,6 +162,7 @@ impl InputBindings {
                 "key \"{quit}\" for input \"quit\" is already bound to \"{previous}\""
             ));
         }
+        assigned.insert(quit_key, "quit");
 
         let (rewind_key, rewind_name) = if rewind_enabled {
             let rewind_key = InputKey::parse(rewind)
@@ -158,11 +172,7 @@ impl InputBindings {
                     "key \"{rewind}\" for input \"rewind\" is already bound to \"{previous}\""
                 ));
             }
-            if rewind_key == quit_key {
-                return Err(format!(
-                    "key \"{rewind}\" for input \"rewind\" is already bound to \"quit\""
-                ));
-            }
+            assigned.insert(rewind_key, "rewind");
             (rewind_key, rewind.to_ascii_lowercase())
         } else {
             (
@@ -174,6 +184,23 @@ impl InputBindings {
             )
         };
 
+        let save_key = InputKey::parse(save_state)
+            .map_err(|error| format!("invalid key for input \"save_state\": {error}"))?;
+        if let Some(previous) = assigned.get(&save_key) {
+            return Err(format!(
+                "key \"{save_state}\" for input \"save_state\" is already bound to \"{previous}\""
+            ));
+        }
+        assigned.insert(save_key, "save_state");
+
+        let load_key = InputKey::parse(load_state)
+            .map_err(|error| format!("invalid key for input \"load_state\": {error}"))?;
+        if let Some(previous) = assigned.get(&load_key) {
+            return Err(format!(
+                "key \"{load_state}\" for input \"load_state\" is already bound to \"{previous}\""
+            ));
+        }
+
         Ok(Self {
             gamepad: bindings,
             quit: quit_key,
@@ -181,6 +208,10 @@ impl InputBindings {
             rewind: rewind_key,
             rewind_name,
             rewind_enabled,
+            save_state: save_key,
+            save_state_name: save_state.to_ascii_lowercase(),
+            load_state: load_key,
+            load_state_name: load_state.to_ascii_lowercase(),
         })
     }
 
@@ -227,6 +258,8 @@ impl InputBindings {
         if self.rewind_enabled {
             items.push(format!("Rewind-{}", self.rewind_name));
         }
+        items.push(format!("Save-{}", self.save_state_name));
+        items.push(format!("Load-{}", self.load_state_name));
         items.join(" ")
     }
 }
@@ -327,6 +360,16 @@ impl Default for InputBindings {
             },
             rewind_name: "r".into(),
             rewind_enabled: true,
+            save_state: InputKey {
+                code: KeyCode::F(2),
+                keypad: false,
+            },
+            save_state_name: "f2".into(),
+            load_state: InputKey {
+                code: KeyCode::F(4),
+                keypad: false,
+            },
+            load_state_name: "f4".into(),
         }
     }
 }
@@ -340,6 +383,8 @@ pub struct InputState {
     failsafe_key: Option<usize>,
     rewind_key: KeyState,
     rewind_failsafe: bool,
+    save_state: OneShotKey,
+    load_state: OneShotKey,
 }
 
 impl Default for InputState {
@@ -365,6 +410,8 @@ impl InputState {
             failsafe_key: None,
             rewind_key: KeyState::new(),
             rewind_failsafe: false,
+            save_state: OneShotKey::default(),
+            load_state: OneShotKey::default(),
         }
     }
 
@@ -397,6 +444,15 @@ impl InputState {
                     self.release_events_supported = true;
                 }
             }
+            return;
+        }
+
+        if event_key == self.bindings.save_state {
+            Self::handle_one_shot(&mut self.save_state, event.kind, now);
+            return;
+        }
+        if event_key == self.bindings.load_state {
+            Self::handle_one_shot(&mut self.load_state, event.kind, now);
             return;
         }
 
@@ -437,6 +493,49 @@ impl InputState {
         self.rebuild_buttons();
     }
 
+    fn handle_one_shot(key: &mut OneShotKey, kind: KeyEventKind, now: Instant) {
+        match kind {
+            KeyEventKind::Press => {
+                key.pending |= !key.pressed;
+                key.repeat_seen |= key.pressed;
+                key.pressed = true;
+                key.last_seen = Some(now);
+            }
+            KeyEventKind::Repeat => {
+                key.pressed = true;
+                key.repeat_seen = true;
+                key.last_seen = Some(now);
+            }
+            KeyEventKind::Release => {
+                key.pressed = false;
+                key.last_seen = None;
+                key.repeat_seen = false;
+            }
+        }
+    }
+
+    fn expire_one_shot(key: &mut OneShotKey, now: Instant, release_events_supported: bool) {
+        let Some(last_seen) = key.last_seen else {
+            return;
+        };
+        let timeout = if release_events_supported {
+            if key.repeat_seen {
+                REPEAT_TIMEOUT
+            } else {
+                RELEASE_EVENT_FAILSAFE
+            }
+        } else if key.repeat_seen {
+            REPEAT_TIMEOUT
+        } else {
+            INITIAL_HOLD_GRACE
+        };
+        if now.saturating_duration_since(last_seen) >= timeout {
+            key.pressed = false;
+            key.last_seen = None;
+            key.repeat_seen = false;
+        }
+    }
+
     pub fn expire(&mut self, now: Instant) {
         if self.release_events_supported {
             if let Some(key_id) = self.failsafe_key {
@@ -473,6 +572,8 @@ impl InputState {
                     self.rewind_failsafe = false;
                 }
             }
+            Self::expire_one_shot(&mut self.save_state, now, self.release_events_supported);
+            Self::expire_one_shot(&mut self.load_state, now, self.release_events_supported);
             self.rebuild_buttons();
             return;
         }
@@ -511,6 +612,8 @@ impl InputState {
                 self.rewind_key.repeat_seen = false;
             }
         }
+        Self::expire_one_shot(&mut self.save_state, now, self.release_events_supported);
+        Self::expire_one_shot(&mut self.load_state, now, self.release_events_supported);
         self.rebuild_buttons();
     }
 
@@ -523,6 +626,8 @@ impl InputState {
         self.failsafe_key = None;
         self.rewind_key = KeyState::new();
         self.rewind_failsafe = false;
+        self.save_state = OneShotKey::default();
+        self.load_state = OneShotKey::default();
         self.buttons.fill(false);
     }
 
@@ -532,6 +637,18 @@ impl InputState {
 
     pub fn rewind_pressed(&self) -> bool {
         self.rewind_key.pressed
+    }
+
+    pub fn take_save(&mut self) -> bool {
+        let pending = self.save_state.pending;
+        self.save_state.pending = false;
+        pending
+    }
+
+    pub fn take_load(&mut self) -> bool {
+        let pending = self.load_state.pending;
+        self.load_state.pending = false;
+        pending
     }
 
     pub fn button_mask(&self) -> u16 {
@@ -605,9 +722,7 @@ fn parse_key_code(name: &str) -> Option<KeyCode> {
         "space" => KeyCode::Char(' '),
         "shift" | "left-shift" => KeyCode::Modifier(ModifierKeyCode::LeftShift),
         "rshift" | "right-shift" => KeyCode::Modifier(ModifierKeyCode::RightShift),
-        "ctrl" | "left-control" | "left-ctrl" => {
-            KeyCode::Modifier(ModifierKeyCode::LeftControl)
-        }
+        "ctrl" | "left-control" | "left-ctrl" => KeyCode::Modifier(ModifierKeyCode::LeftControl),
         "rctrl" | "right-control" | "right-ctrl" => {
             KeyCode::Modifier(ModifierKeyCode::RightControl)
         }
@@ -664,9 +779,23 @@ fn parse_key_code(name: &str) -> Option<KeyCode> {
 fn is_keypad_name(name: &str) -> bool {
     matches!(
         name,
-        "keypad0" | "keypad1" | "keypad2" | "keypad3" | "keypad4" | "keypad5" | "keypad6"
-            | "keypad7" | "keypad8" | "keypad9" | "kp_period" | "kp_equals" | "kp_enter"
-            | "kp_plus" | "kp_minus" | "multiply" | "divide"
+        "keypad0"
+            | "keypad1"
+            | "keypad2"
+            | "keypad3"
+            | "keypad4"
+            | "keypad5"
+            | "keypad6"
+            | "keypad7"
+            | "keypad8"
+            | "keypad9"
+            | "kp_period"
+            | "kp_equals"
+            | "kp_enter"
+            | "kp_plus"
+            | "kp_minus"
+            | "multiply"
+            | "divide"
     )
 }
 
@@ -723,6 +852,15 @@ mod tests {
         state.button_mask() & (1 << button) != 0
     }
 
+    fn bindings(
+        gamepad: &[(&str, usize, &str)],
+        quit: &str,
+        rewind: &str,
+        rewind_enabled: bool,
+    ) -> InputBindings {
+        InputBindings::new(gamepad, quit, rewind, "f2", "f4", rewind_enabled).unwrap()
+    }
+
     #[test]
     fn default_keys_map_to_standard_libretro_buttons() {
         let cases = [
@@ -736,7 +874,10 @@ mod tests {
             (KeyCode::Char('a'), BUTTON_Y),
             (KeyCode::Char('s'), BUTTON_X),
             (KeyCode::Enter, BUTTON_START),
-            (KeyCode::Modifier(ModifierKeyCode::RightShift), BUTTON_SELECT),
+            (
+                KeyCode::Modifier(ModifierKeyCode::RightShift),
+                BUTTON_SELECT,
+            ),
         ];
 
         for (code, expected_button) in cases {
@@ -873,7 +1014,7 @@ mod tests {
 
     #[test]
     fn configured_quit_key_requests_shutdown() {
-        let bindings = InputBindings::new(&[("a", BUTTON_A, "x")], "q", "r", true).unwrap();
+        let bindings = bindings(&[("a", BUTTON_A, "x")], "q", "r", true);
         let mut state = InputState::with_bindings(bindings, false);
 
         state.handle_key(key(KeyCode::Char('q'), KeyEventKind::Press), Instant::now());
@@ -894,7 +1035,7 @@ mod tests {
 
     #[test]
     fn numpad_binding_does_not_match_the_number_row() {
-        let bindings = InputBindings::new(&[("a", BUTTON_A, "numpad-1")], "esc", "r", true).unwrap();
+        let bindings = bindings(&[("a", BUTTON_A, "numpad-1")], "esc", "r", true);
         let mut state = InputState::with_bindings(bindings, true);
 
         state.handle_key(key(KeyCode::Char('1'), KeyEventKind::Press), Instant::now());
@@ -904,7 +1045,7 @@ mod tests {
 
     #[test]
     fn numpad_binding_matches_keypad_events() {
-        let bindings = InputBindings::new(&[("a", BUTTON_A, "numpad-1")], "esc", "r", true).unwrap();
+        let bindings = bindings(&[("a", BUTTON_A, "numpad-1")], "esc", "r", true);
         let mut state = InputState::with_bindings(bindings, true);
         let event = KeyEvent::new_with_kind_and_state(
             KeyCode::Char('1'),
@@ -920,7 +1061,7 @@ mod tests {
 
     #[test]
     fn numpad_binding_ignores_num_lock_state() {
-        let bindings = InputBindings::new(&[("a", BUTTON_A, "numpad-1")], "esc", "r", true).unwrap();
+        let bindings = bindings(&[("a", BUTTON_A, "numpad-1")], "esc", "r", true);
         let mut state = InputState::with_bindings(bindings, true);
         let event = KeyEvent::new_with_kind_and_state(
             KeyCode::End,
@@ -988,7 +1129,7 @@ mod tests {
 
     #[test]
     fn printable_plus_is_a_valid_binding() {
-        let bindings = InputBindings::new(&[("a", BUTTON_A, "+")], "esc", "r", true).unwrap();
+        let bindings = bindings(&[("a", BUTTON_A, "+")], "esc", "r", true);
         let mut state = InputState::with_bindings(bindings, false);
 
         state.handle_key(key(KeyCode::Char('+'), KeyEventKind::Press), Instant::now());
@@ -1002,7 +1143,7 @@ mod tests {
 
         assert_eq!(
             status,
-            "↑-up ↓-down ←-left →-right Select-rshift Start-enter X-s Y-a A-x B-z Exit-escape Rewind-r"
+            "↑-up ↓-down ←-left →-right Select-rshift Start-enter X-s Y-a A-x B-z Exit-escape Rewind-r Save-f2 Load-f4"
         );
     }
 
@@ -1019,13 +1160,15 @@ mod tests {
             ],
             "esc",
             "p",
+            "f2",
+            "f4",
             true,
         )
         .unwrap();
 
         assert_eq!(
             bindings.status_line(),
-            "L1-q L2-w R1-e R2-u L3-t R3-y Exit-esc Rewind-p"
+            "L1-q L2-w R1-e R2-u L3-t R3-y Exit-esc Rewind-p Save-f2 Load-f4"
         );
     }
 
@@ -1047,7 +1190,7 @@ mod tests {
 
     #[test]
     fn rewind_key_uses_the_configured_binding() {
-        let bindings = InputBindings::new(&[], "esc", "y", true).unwrap();
+        let bindings = bindings(&[], "esc", "y", true);
         let mut state = InputState::with_bindings(bindings, true);
 
         state.handle_key(key(KeyCode::Char('r'), KeyEventKind::Press), Instant::now());
@@ -1070,16 +1213,17 @@ mod tests {
 
     #[test]
     fn rewind_key_conflicts_with_gamepad_and_quit_bindings() {
-        let error = InputBindings::new(&[("a", BUTTON_A, "r")], "esc", "r", true).unwrap_err();
+        let error =
+            InputBindings::new(&[("a", BUTTON_A, "r")], "esc", "r", "f2", "f4", true).unwrap_err();
         assert!(error.contains("already bound"));
 
-        let error = InputBindings::new(&[], "r", "r", true).unwrap_err();
+        let error = InputBindings::new(&[], "r", "r", "f2", "f4", true).unwrap_err();
         assert!(error.contains("already bound"));
     }
 
     #[test]
     fn disabled_rewind_frees_the_key_for_gamepad() {
-        let bindings = InputBindings::new(&[("a", BUTTON_A, "r")], "esc", "r", false).unwrap();
+        let bindings = bindings(&[("a", BUTTON_A, "r")], "esc", "r", false);
         let mut state = InputState::with_bindings(bindings, true);
 
         state.handle_key(key(KeyCode::Char('r'), KeyEventKind::Press), Instant::now());
@@ -1090,9 +1234,9 @@ mod tests {
 
     #[test]
     fn disabled_rewind_hides_the_hotkey() {
-        let bindings = InputBindings::new(&[], "esc", "r", false).unwrap();
+        let bindings = bindings(&[], "esc", "r", false);
 
-        assert_eq!(bindings.status_line(), "Exit-esc");
+        assert_eq!(bindings.status_line(), "Exit-esc Save-f2 Load-f4");
     }
 
     #[test]
@@ -1104,5 +1248,180 @@ mod tests {
         state.clear();
 
         assert!(!state.rewind_pressed());
+    }
+
+    #[test]
+    fn save_and_load_fire_once_per_press() {
+        let now = Instant::now();
+        let mut state = InputState::default();
+
+        state.handle_key(key(KeyCode::F(2), KeyEventKind::Press), now);
+        assert!(state.take_save());
+        assert!(!state.take_save());
+
+        state.handle_key(key(KeyCode::F(4), KeyEventKind::Press), now);
+        assert!(state.take_load());
+        assert!(!state.take_load());
+
+        state.handle_key(
+            key(KeyCode::F(2), KeyEventKind::Release),
+            now + Duration::from_millis(50),
+        );
+        state.handle_key(
+            key(KeyCode::F(2), KeyEventKind::Press),
+            now + Duration::from_millis(100),
+        );
+        assert!(state.take_save());
+    }
+
+    #[test]
+    fn repeated_keys_do_not_retrigger_save_or_load() {
+        let now = Instant::now();
+        let mut state = InputState::default();
+
+        state.handle_key(key(KeyCode::F(2), KeyEventKind::Press), now);
+        assert!(state.take_save());
+        state.handle_key(
+            key(KeyCode::F(2), KeyEventKind::Repeat),
+            now + Duration::from_millis(50),
+        );
+        state.handle_key(
+            key(KeyCode::F(2), KeyEventKind::Repeat),
+            now + Duration::from_millis(100),
+        );
+        assert!(!state.take_save());
+
+        state.handle_key(key(KeyCode::F(4), KeyEventKind::Press), now);
+        assert!(state.take_load());
+        state.handle_key(
+            key(KeyCode::F(4), KeyEventKind::Repeat),
+            now + Duration::from_millis(50),
+        );
+        assert!(!state.take_load());
+
+        state.handle_key(
+            key(KeyCode::F(2), KeyEventKind::Release),
+            now + Duration::from_millis(150),
+        );
+        state.handle_key(
+            key(KeyCode::F(2), KeyEventKind::Press),
+            now + Duration::from_millis(200),
+        );
+        assert!(state.take_save());
+    }
+
+    #[test]
+    fn legacy_auto_repeat_does_not_retrigger_save() {
+        let now = Instant::now();
+        let mut state = InputState::default();
+
+        state.handle_key(key(KeyCode::F(2), KeyEventKind::Press), now);
+        assert!(state.take_save());
+        state.handle_key(
+            key(KeyCode::F(2), KeyEventKind::Press),
+            now + Duration::from_millis(30),
+        );
+        state.handle_key(
+            key(KeyCode::F(2), KeyEventKind::Press),
+            now + Duration::from_millis(60),
+        );
+        assert!(!state.take_save());
+
+        state.expire(now + Duration::from_millis(500));
+        state.handle_key(
+            key(KeyCode::F(2), KeyEventKind::Press),
+            now + Duration::from_millis(600),
+        );
+        assert!(state.take_save());
+    }
+
+    #[test]
+    fn late_legacy_repeat_without_expiration_does_not_retrigger_save() {
+        let now = Instant::now();
+        let mut state = InputState::default();
+
+        state.handle_key(key(KeyCode::F(2), KeyEventKind::Press), now);
+        assert!(state.take_save());
+
+        // A queued auto-repeat Press arrives 200 ms later with no
+        // expiration in between; the key is still the same held press.
+        state.handle_key(
+            key(KeyCode::F(2), KeyEventKind::Press),
+            now + Duration::from_millis(200),
+        );
+        assert!(!state.take_save());
+
+        state.expire(now + Duration::from_millis(400));
+        state.handle_key(
+            key(KeyCode::F(2), KeyEventKind::Press),
+            now + Duration::from_millis(500),
+        );
+        assert!(state.take_save());
+    }
+
+    #[test]
+    fn quick_repeat_of_a_single_tap_is_ignored() {
+        let now = Instant::now();
+        let mut state = InputState::default();
+
+        state.handle_key(key(KeyCode::F(2), KeyEventKind::Press), now);
+        assert!(state.take_save());
+        state.handle_key(
+            key(KeyCode::F(2), KeyEventKind::Press),
+            now + Duration::from_millis(30),
+        );
+        assert!(!state.take_save());
+
+        state.expire(now + INITIAL_HOLD_GRACE + Duration::from_millis(1));
+        state.handle_key(
+            key(KeyCode::F(2), KeyEventKind::Press),
+            now + INITIAL_HOLD_GRACE + Duration::from_millis(2),
+        );
+        assert!(state.take_save());
+    }
+
+    #[test]
+    fn clear_cancels_pending_save_and_load() {
+        let now = Instant::now();
+        let mut state = InputState::default();
+        state.handle_key(key(KeyCode::F(2), KeyEventKind::Press), now);
+        state.handle_key(key(KeyCode::F(4), KeyEventKind::Press), now);
+
+        state.clear();
+
+        assert!(!state.take_save());
+        assert!(!state.take_load());
+    }
+
+    #[test]
+    fn save_and_load_keys_conflict_with_other_bindings() {
+        let error =
+            InputBindings::new(&[("a", BUTTON_A, "f2")], "esc", "r", "f2", "f4", true).unwrap_err();
+        assert!(error.contains("already bound"));
+
+        let error = InputBindings::new(&[], "f4", "r", "f2", "f4", true).unwrap_err();
+        assert!(error.contains("already bound"));
+
+        let error = InputBindings::new(&[], "esc", "f2", "f2", "f4", true).unwrap_err();
+        assert!(error.contains("already bound"));
+
+        let error = InputBindings::new(&[], "esc", "r", "f2", "f2", true).unwrap_err();
+        assert!(error.contains("already bound"));
+    }
+
+    #[test]
+    fn save_and_load_use_the_configured_bindings() {
+        let bindings = InputBindings::new(&[], "esc", "r", "f1", "f3", true).unwrap();
+        let mut state = InputState::with_bindings(bindings, true);
+
+        state.handle_key(key(KeyCode::F(2), KeyEventKind::Press), Instant::now());
+        assert!(!state.take_save());
+        state.handle_key(key(KeyCode::F(4), KeyEventKind::Press), Instant::now());
+        assert!(!state.take_load());
+
+        state.handle_key(key(KeyCode::F(1), KeyEventKind::Press), Instant::now());
+        assert!(state.take_save());
+        state.handle_key(key(KeyCode::F(3), KeyEventKind::Press), Instant::now());
+        assert!(state.take_load());
     }
 }

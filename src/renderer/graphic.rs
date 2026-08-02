@@ -160,5 +160,4 @@ mod tests {
             |chunk| chunk.starts_with("\x1b_Gm=1,q=2;") || chunk.starts_with("\x1b_Gm=0,q=2;")
         ));
     }
-
 }

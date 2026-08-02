@@ -63,6 +63,8 @@ start = "enter"
 select = "rshift"
 quit = "escape"  # Ctrl-C is always reserved for quitting
 rewind = "r"     # Hold to rewind
+save_state = "f2"  # Save a new state
+load_state = "f4"  # Load the newest state
 
 # Optional shoulder buttons, unbound by default:
 # l = "q"
@@ -76,6 +78,9 @@ rewind = "r"     # Hold to rewind
 enabled = true          # Snapshot-based rewind
 granularity = 2         # Frames between snapshots
 buffer_size_mb = 20     # Memory cap for stored snapshots
+
+[state]
+save_on_exit = false    # Save a state when exiting cleanly
 ```
 
 Rewind steps back while the rewind key is held. A higher `granularity` uses
@@ -95,6 +100,8 @@ one input. Key combinations such as `ctrl+x` are not supported.
 | A / S            | Y / X        |
 | Enter            | Start        |
 | RShift           | Select       |
+| F2               | Save state   |
+| F4               | Load state   |
 | Escape or Ctrl-C | Exit cleanly |
 
 ### Key names
@@ -153,6 +160,102 @@ support vary across terminals and operating systems. Asoby preserves every
 mapped event it receives and clears held input on focus loss, input errors,
 shutdown, and startup. Standalone modifier and numeric keypad bindings require
 enhanced keyboard reporting to be distinguished reliably.
+
+## Save states
+
+Press the save key to write a new timestamped state, and the load key to load
+the newest state for the current ROM and core. Both actions fire once per key
+press. Loading when no state exists is not an error and reports `No save state
+found` in the status line. There are no slots, no state browser, and no
+automatic pruning: every save creates a new file and Asoby never overwrites or
+deletes states. Manage the files with normal filesystem tools.
+
+States are stored under the platform data directory:
+
+```text
+<data-dir>/asoby/states/<core-name>/<rom-file-name>/
+```
+
+For example, on Linux with `XDG_DATA_HOME` unset, states for `fceumm` live in
+`~/.local/share/asoby/states/fceumm/`:
+
+```text
+states/
+└── fceumm/
+    ├── Super Mario Bros.nes/
+    │   ├── Super Mario Bros.nes.20260802T151205.903+0800.state
+    │   └── Super Mario Bros.nes.20260802T154831.027+0800.state
+    └── Contra.zip/
+        └── Contra.zip.20260802T160011.412+0800.state
+```
+
+The directory and file names use the complete launched ROM filename, including
+its extension, so two ROMs with the same name share a state directory. The core
+name comes from the core library filename with the `_libretro` suffix and
+platform extension removed, so different cores keep separate states.
+
+Timestamps use the local timezone with the numeric offset, in the
+filesystem-safe basic ISO 8601 form `YYYYMMDDTHHMMSS.sss+HHMM`
+(e.g. `20260802T151205.903+0800`). When a generated filename already exists,
+Asoby appends a deterministic counter (`-2`, `-3`, ...) instead of overwriting.
+The newest state is selected by parsing these timestamps and comparing absolute
+instants, so daylight-saving transitions and copied files with changed
+modification times do not affect the result.
+
+### Loading a specific state
+
+Pass any state file to load it at startup, after the core initializes and the
+ROM loads but before the first emulated frame:
+
+```sh
+asoby 'Super Mario Bros.nes' --state /path/to/super-mario.state
+```
+
+A missing, corrupt, incompatible, or unloadable explicitly requested state is a
+fatal startup error. The file's embedded core and ROM identifiers must match
+the running core and ROM, but its filename is ignored, so renamed or copied
+files load fine. Without `--state`, Asoby starts the game normally and does not
+automatically load the newest state. States saved after loading an explicit
+file still go to the normal managed state directory.
+
+### Save on exit
+
+With `save_on_exit = true` in the `[state]` section, Asoby writes a new state
+whenever the session ends cleanly, including Escape and Ctrl-C. It saves while
+the ROM and core are still loaded, before core cleanup. Save-on-exit is skipped
+when the ROM failed to load or the core does not support complete savestates.
+
+### Listing states
+
+The read-only `state list` command shows every managed state:
+
+```sh
+asoby state list
+asoby state list 'Super Mario Bros.nes'
+asoby state list 'Super Mario Bros.nes' --core fceumm
+```
+
+```text
+GAME                   CORE     SAVED                         PATH
+Super Mario Bros.nes   fceumm   2026-08-02 15:12:05 +08:00   /absolute/path/to/the/state/file
+```
+
+`GAME` is the complete launched ROM filename, `SAVED` is formatted in the
+timestamp's recorded local offset, and `PATH` is absolute so it can be passed
+directly to `rm`, `cp`, or `asoby <rom> --state <path>` (on Unix, paths under
+the home directory are shown as `~/...`). Temporary files are skipped. Files that do not match the managed naming scheme, whose embedded
+timestamp disagrees with their name, whose embedded core or ROM does not match
+the enclosing directories, or that exceed 256 MiB are reported as malformed
+with a reason. The command never resolves, installs, or downloads cores.
+
+### Core support
+
+Save states need the core's complete serialization support. When a core does
+not provide it, runtime save/load, save-on-exit, and rewind are disabled with a
+warning at startup. Loading a state during play preserves the rewind history
+and the current session frame counter, so rewind can cross the load boundary.
+A state supplied with `--state` at startup is treated as frame zero and rewind
+capture starts from it.
 
 ## License
 

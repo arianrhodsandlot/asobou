@@ -1,5 +1,5 @@
-pub mod auto;
 pub mod ascii;
+pub mod auto;
 pub mod block;
 pub mod debug;
 pub mod graphic;

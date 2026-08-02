@@ -6,7 +6,7 @@ mod emulation;
 mod input;
 mod renderer;
 
-use clap::{Parser, Subcommand};
+use clap::{FromArgMatches, Parser, Subcommand};
 use commands::run::RunConfig;
 use renderer::RendererMode;
 use std::path::PathBuf;
@@ -17,7 +17,14 @@ use std::path::PathBuf;
     about = "Retro game emulator for the terminal",
     version,
     disable_version_flag = true,
-    disable_help_subcommand = true
+    disable_help_subcommand = true,
+    after_help = "Examples:
+  asoby 'Super Mario Bros.nes'                       Start a game
+  asoby 'Streets of Rage 2.md' -r ascii              Start a game and render as ASCII characters
+  asoby 'Super Castlevania IV.zip' -c snes9x         Run with an explicit core
+  asoby 'Super Metroid.sfc' --state ~/backup.state   Load a save state at startup
+  asoby core install genesis_plus_gx                 Install a libretro core
+  asoby state list 'Pokemon Emerald.gba' --core mgba List saved states, filtered"
 )]
 struct Args {
     #[command(subcommand)]
@@ -115,7 +122,9 @@ enum StateAction {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let mut command = <Args as clap::CommandFactory>::command().color(clap::ColorChoice::Never);
+    let mut matches = command.get_matches_mut();
+    let args = Args::from_arg_matches_mut(&mut matches)?;
 
     if let Some(Command::Core { action }) = args.command {
         match action {
@@ -144,8 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let Some(rom) = args.rom else {
-        let mut cmd = <Args as clap::CommandFactory>::command();
-        cmd.print_help()?;
+        command.print_help()?;
         return Ok(());
     };
 

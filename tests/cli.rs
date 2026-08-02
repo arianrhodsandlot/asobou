@@ -97,6 +97,40 @@ fn help_lists_mute() {
 }
 
 #[test]
+fn help_shows_examples() {
+    let (stdout, _stderr, _code) = run(&[]);
+
+    assert!(stdout.contains("Examples:"));
+    assert!(stdout.contains("asoby 'Streets of Rage 2.md'"));
+    assert!(stdout.contains("asoby 'Super Metroid.sfc' --state ~/backup.state"));
+    assert!(stdout.contains("asoby state list 'Pokemon Emerald.gba' --core mgba"));
+    assert!(stdout.contains("asoby core install genesis_plus_gx"));
+}
+
+#[test]
+fn help_has_no_ansi_styling() {
+    for args in [&["--help"][..], &["state", "--help"], &["core", "--help"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
+            .env("CLICOLOR_FORCE", "1")
+            .args(args)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        assert!(
+            !stdout.contains('\x1b'),
+            "help for {args:?} contains ANSI styling"
+        );
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
+        .env("CLICOLOR_FORCE", "1")
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&output.stdout).contains('\x1b'));
+}
+
+#[test]
 fn core_list_shows_header() {
     // An empty cores dir prints "No cores installed." without a header, so
     // stub an installed registered core file.

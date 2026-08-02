@@ -79,14 +79,14 @@ impl Default for InputConfig {
             x: "s".into(),
             y: "a".into(),
             start: "enter".into(),
-            select: "backspace".into(),
+            select: "rshift".into(),
             l: None,
             r: None,
             l2: None,
             r2: None,
             l3: None,
             r3: None,
-            quit: "esc".into(),
+            quit: "escape".into(),
             rewind: "r".into(),
         }
     }
@@ -334,14 +334,14 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let settings = load_settings_from(&directory.path().join("missing.toml")).unwrap();
 
-        assert_eq!(settings.input_bindings.quit_name(), "esc");
+        assert_eq!(settings.input_bindings.quit_name(), "escape");
     }
 
     #[test]
     fn partial_config_keeps_unspecified_defaults() {
         let settings = parse_settings("[input]\na = \"v\"\n", Path::new("config.toml")).unwrap();
 
-        assert_eq!(settings.input_bindings.quit_name(), "esc");
+        assert_eq!(settings.input_bindings.quit_name(), "escape");
         assert_eq!(settings.input_bindings.rewind_name(), "r");
         assert!(settings.input_bindings.rewind_enabled());
         assert!(settings.rewind.enabled);

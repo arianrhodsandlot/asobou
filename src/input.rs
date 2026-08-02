@@ -83,6 +83,15 @@ impl InputKey {
             });
         }
 
+        if is_keypad_name(&name) {
+            let code = parse_numpad_key(&name)
+                .ok_or_else(|| format!("unknown key: \"{name}\""))?;
+            return Ok(Self {
+                code: normalize_keypad_code(code),
+                keypad: true,
+            });
+        }
+
         let code = parse_key_code(&name).ok_or_else(|| format!("unknown key: \"{name}\""))?;
         Ok(Self {
             code: normalize_code(code),
@@ -300,10 +309,10 @@ impl Default for InputBindings {
                 },
                 Binding {
                     key: InputKey {
-                        code: KeyCode::Backspace,
+                        code: KeyCode::Modifier(ModifierKeyCode::RightShift),
                         keypad: false,
                     },
-                    key_name: "backspace".into(),
+                    key_name: "rshift".into(),
                     button: BUTTON_SELECT,
                 },
             ],
@@ -311,7 +320,7 @@ impl Default for InputBindings {
                 code: KeyCode::Esc,
                 keypad: false,
             },
-            quit_name: "esc".into(),
+            quit_name: "escape".into(),
             rewind: InputKey {
                 code: KeyCode::Char('r'),
                 keypad: false,
@@ -580,34 +589,61 @@ fn parse_key_code(name: &str) -> Option<KeyCode> {
         "down" => KeyCode::Down,
         "home" => KeyCode::Home,
         "end" => KeyCode::End,
-        "page-up" => KeyCode::PageUp,
-        "page-down" => KeyCode::PageDown,
+        "pageup" | "page-up" => KeyCode::PageUp,
+        "pagedown" | "page-down" => KeyCode::PageDown,
         "tab" => KeyCode::Tab,
-        "delete" => KeyCode::Delete,
+        "del" | "delete" => KeyCode::Delete,
         "insert" => KeyCode::Insert,
         "null" => KeyCode::Null,
-        "esc" | "escape" => KeyCode::Esc,
-        "caps-lock" => KeyCode::CapsLock,
-        "scroll-lock" => KeyCode::ScrollLock,
-        "num-lock" => KeyCode::NumLock,
-        "print-screen" => KeyCode::PrintScreen,
+        "escape" | "esc" => KeyCode::Esc,
+        "capslock" | "caps-lock" => KeyCode::CapsLock,
+        "scroll_lock" | "scroll-lock" => KeyCode::ScrollLock,
+        "numlock" | "num-lock" => KeyCode::NumLock,
+        "print_screen" | "print-screen" => KeyCode::PrintScreen,
         "pause" => KeyCode::Pause,
         "menu" => KeyCode::Menu,
         "space" => KeyCode::Char(' '),
-        "left-shift" => KeyCode::Modifier(ModifierKeyCode::LeftShift),
-        "left-control" | "left-ctrl" => KeyCode::Modifier(ModifierKeyCode::LeftControl),
-        "left-alt" => KeyCode::Modifier(ModifierKeyCode::LeftAlt),
+        "shift" | "left-shift" => KeyCode::Modifier(ModifierKeyCode::LeftShift),
+        "rshift" | "right-shift" => KeyCode::Modifier(ModifierKeyCode::RightShift),
+        "ctrl" | "left-control" | "left-ctrl" => {
+            KeyCode::Modifier(ModifierKeyCode::LeftControl)
+        }
+        "rctrl" | "right-control" | "right-ctrl" => {
+            KeyCode::Modifier(ModifierKeyCode::RightControl)
+        }
+        "alt" | "left-alt" => KeyCode::Modifier(ModifierKeyCode::LeftAlt),
+        "ralt" | "right-alt" => KeyCode::Modifier(ModifierKeyCode::RightAlt),
         "left-super" => KeyCode::Modifier(ModifierKeyCode::LeftSuper),
         "left-hyper" => KeyCode::Modifier(ModifierKeyCode::LeftHyper),
         "left-meta" => KeyCode::Modifier(ModifierKeyCode::LeftMeta),
-        "right-shift" => KeyCode::Modifier(ModifierKeyCode::RightShift),
-        "right-control" | "right-ctrl" => KeyCode::Modifier(ModifierKeyCode::RightControl),
-        "right-alt" => KeyCode::Modifier(ModifierKeyCode::RightAlt),
         "right-super" => KeyCode::Modifier(ModifierKeyCode::RightSuper),
         "right-hyper" => KeyCode::Modifier(ModifierKeyCode::RightHyper),
         "right-meta" => KeyCode::Modifier(ModifierKeyCode::RightMeta),
         "iso-level-3-shift" => KeyCode::Modifier(ModifierKeyCode::IsoLevel3Shift),
         "iso-level-5-shift" => KeyCode::Modifier(ModifierKeyCode::IsoLevel5Shift),
+        "num0" => KeyCode::Char('0'),
+        "num1" => KeyCode::Char('1'),
+        "num2" => KeyCode::Char('2'),
+        "num3" => KeyCode::Char('3'),
+        "num4" => KeyCode::Char('4'),
+        "num5" => KeyCode::Char('5'),
+        "num6" => KeyCode::Char('6'),
+        "num7" => KeyCode::Char('7'),
+        "num8" => KeyCode::Char('8'),
+        "num9" => KeyCode::Char('9'),
+        "period" => KeyCode::Char('.'),
+        "comma" => KeyCode::Char(','),
+        "slash" => KeyCode::Char('/'),
+        "minus" | "subtract" => KeyCode::Char('-'),
+        "equals" => KeyCode::Char('='),
+        "leftbracket" => KeyCode::Char('['),
+        "backslash" => KeyCode::Char('\\'),
+        "rightbracket" => KeyCode::Char(']'),
+        "backquote" => KeyCode::Char('`'),
+        "quote" => KeyCode::Char('\''),
+        "semicolon" => KeyCode::Char(';'),
+        "tilde" => KeyCode::Char('~'),
+        "add" => KeyCode::Char('+'),
         _ => {
             if let Some(number) = name.strip_prefix('f').and_then(|value| value.parse().ok())
                 && (1..=24).contains(&number)
@@ -625,25 +661,34 @@ fn parse_key_code(name: &str) -> Option<KeyCode> {
     Some(code)
 }
 
+fn is_keypad_name(name: &str) -> bool {
+    matches!(
+        name,
+        "keypad0" | "keypad1" | "keypad2" | "keypad3" | "keypad4" | "keypad5" | "keypad6"
+            | "keypad7" | "keypad8" | "keypad9" | "kp_period" | "kp_equals" | "kp_enter"
+            | "kp_plus" | "kp_minus" | "multiply" | "divide"
+    )
+}
+
 fn parse_numpad_key(name: &str) -> Option<KeyCode> {
     let code = match name {
-        "0" => KeyCode::Char('0'),
-        "1" => KeyCode::Char('1'),
-        "2" => KeyCode::Char('2'),
-        "3" => KeyCode::Char('3'),
-        "4" => KeyCode::Char('4'),
-        "5" => KeyCode::Char('5'),
-        "6" => KeyCode::Char('6'),
-        "7" => KeyCode::Char('7'),
-        "8" => KeyCode::Char('8'),
-        "9" => KeyCode::Char('9'),
-        "decimal" => KeyCode::Char('.'),
+        "0" | "keypad0" => KeyCode::Char('0'),
+        "1" | "keypad1" => KeyCode::Char('1'),
+        "2" | "keypad2" => KeyCode::Char('2'),
+        "3" | "keypad3" => KeyCode::Char('3'),
+        "4" | "keypad4" => KeyCode::Char('4'),
+        "5" | "keypad5" => KeyCode::Char('5'),
+        "6" | "keypad6" => KeyCode::Char('6'),
+        "7" | "keypad7" => KeyCode::Char('7'),
+        "8" | "keypad8" => KeyCode::Char('8'),
+        "9" | "keypad9" => KeyCode::Char('9'),
+        "decimal" | "kp_period" => KeyCode::Char('.'),
         "divide" => KeyCode::Char('/'),
         "multiply" => KeyCode::Char('*'),
-        "subtract" => KeyCode::Char('-'),
-        "add" => KeyCode::Char('+'),
-        "enter" => KeyCode::Enter,
-        "equal" => KeyCode::Char('='),
+        "subtract" | "kp_minus" => KeyCode::Char('-'),
+        "add" | "kp_plus" => KeyCode::Char('+'),
+        "enter" | "kp_enter" => KeyCode::Enter,
+        "equal" | "kp_equals" => KeyCode::Char('='),
         "comma" => KeyCode::Char(','),
         "left" => KeyCode::Left,
         "right" => KeyCode::Right,
@@ -691,7 +736,7 @@ mod tests {
             (KeyCode::Char('a'), BUTTON_Y),
             (KeyCode::Char('s'), BUTTON_X),
             (KeyCode::Enter, BUTTON_START),
-            (KeyCode::Backspace, BUTTON_SELECT),
+            (KeyCode::Modifier(ModifierKeyCode::RightShift), BUTTON_SELECT),
         ];
 
         for (code, expected_button) in cases {
@@ -890,6 +935,58 @@ mod tests {
     }
 
     #[test]
+    fn retroarch_key_names_map_to_expected_codes() {
+        use ModifierKeyCode::*;
+
+        let cases = [
+            ("del", KeyCode::Delete, false),
+            ("pageup", KeyCode::PageUp, false),
+            ("pagedown", KeyCode::PageDown, false),
+            ("capslock", KeyCode::CapsLock, false),
+            ("numlock", KeyCode::NumLock, false),
+            ("print_screen", KeyCode::PrintScreen, false),
+            ("scroll_lock", KeyCode::ScrollLock, false),
+            ("escape", KeyCode::Esc, false),
+            ("shift", KeyCode::Modifier(LeftShift), false),
+            ("rshift", KeyCode::Modifier(RightShift), false),
+            ("ctrl", KeyCode::Modifier(LeftControl), false),
+            ("rctrl", KeyCode::Modifier(RightControl), false),
+            ("alt", KeyCode::Modifier(LeftAlt), false),
+            ("ralt", KeyCode::Modifier(RightAlt), false),
+            ("num0", KeyCode::Char('0'), false),
+            ("num9", KeyCode::Char('9'), false),
+            ("add", KeyCode::Char('+'), false),
+            ("subtract", KeyCode::Char('-'), false),
+            ("period", KeyCode::Char('.'), false),
+            ("comma", KeyCode::Char(','), false),
+            ("slash", KeyCode::Char('/'), false),
+            ("minus", KeyCode::Char('-'), false),
+            ("equals", KeyCode::Char('='), false),
+            ("leftbracket", KeyCode::Char('['), false),
+            ("backslash", KeyCode::Char('\\'), false),
+            ("rightbracket", KeyCode::Char(']'), false),
+            ("backquote", KeyCode::Char('`'), false),
+            ("quote", KeyCode::Char('\''), false),
+            ("semicolon", KeyCode::Char(';'), false),
+            ("tilde", KeyCode::Char('~'), false),
+            ("keypad0", KeyCode::Char('0'), true),
+            ("keypad9", KeyCode::Char('9'), true),
+            ("kp_period", KeyCode::Char('.'), true),
+            ("kp_equals", KeyCode::Char('='), true),
+            ("kp_enter", KeyCode::Enter, true),
+            ("kp_plus", KeyCode::Char('+'), true),
+            ("kp_minus", KeyCode::Char('-'), true),
+            ("multiply", KeyCode::Char('*'), true),
+            ("divide", KeyCode::Char('/'), true),
+        ];
+
+        for (name, code, keypad) in cases {
+            let key = InputKey::parse(name).unwrap();
+            assert_eq!(key, InputKey { code, keypad }, "name: {name}");
+        }
+    }
+
+    #[test]
     fn printable_plus_is_a_valid_binding() {
         let bindings = InputBindings::new(&[("a", BUTTON_A, "+")], "esc", "r", true).unwrap();
         let mut state = InputState::with_bindings(bindings, false);
@@ -905,7 +1002,7 @@ mod tests {
 
         assert_eq!(
             status,
-            "↑-up ↓-down ←-left →-right Select-backspace Start-enter X-s Y-a A-x B-z Exit-esc Rewind-r"
+            "↑-up ↓-down ←-left →-right Select-rshift Start-enter X-s Y-a A-x B-z Exit-escape Rewind-r"
         );
     }
 

@@ -103,12 +103,12 @@ static SYSTEMS: LazyLock<Vec<System>> = LazyLock::new(|| {
         System {
             extensions: &["gb"],
             signatures: &[],
-            recommended_core: "mgba",
+            recommended_core: "gambatte",
         },
         System {
             extensions: &["gbc"],
             signatures: &[],
-            recommended_core: "mgba",
+            recommended_core: "gambatte",
         },
         System {
             extensions: &["gba"],

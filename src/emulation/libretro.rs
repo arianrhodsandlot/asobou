@@ -28,6 +28,7 @@ const RETRO_ENV_GET_LANGUAGE: c_uint = 39;
 const RETRO_ENV_SET_CORE_OPTIONS_INTL: c_uint = 54;
 const RETRO_ENV_SET_CORE_OPTIONS_DISPLAY: c_uint = 55;
 const RETRO_ENV_GET_INPUT_BITMASKS: c_uint = 51 | 0x10000;
+const RETRO_ENV_GET_CAN_DUPE: c_uint = 3;
 const RETRO_ENV_GET_TARGET_SAMPLE_RATE: c_uint = 81 | 0x10000;
 const RETRO_ENV_SET_SERIALIZATION_QUIRKS: c_uint = 87;
 
@@ -247,6 +248,12 @@ unsafe extern "C" fn env_callback(cmd: c_uint, data: *mut c_void) -> bool {
         RETRO_ENV_SET_GEOMETRY => true,
         RETRO_ENV_SET_CORE_OPTIONS_DISPLAY => true,
         RETRO_ENV_GET_INPUT_BITMASKS => false,
+        RETRO_ENV_GET_CAN_DUPE => {
+            if !data.is_null() {
+                unsafe { *(data as *mut bool) = true };
+            }
+            true
+        }
         RETRO_ENV_GET_TARGET_SAMPLE_RATE => {
             let sample_rate = TARGET_SAMPLE_RATE.load(Ordering::Relaxed);
             if data.is_null() || sample_rate == 0 {

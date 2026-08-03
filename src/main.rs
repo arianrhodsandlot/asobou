@@ -74,6 +74,7 @@ struct Args {
     version: (),
 
     #[arg(
+        short = 's',
         long = "state",
         value_name = "PATH",
         help = "Load a save state file after the core starts"
@@ -116,7 +117,7 @@ enum StateAction {
     List {
         #[arg(help = "Filter by the complete ROM filename")]
         rom: Option<String>,
-        #[arg(long = "core", help = "Filter by core name")]
+        #[arg(short = 'c', long = "core", help = "Filter by core name")]
         core: Option<String>,
     },
 }

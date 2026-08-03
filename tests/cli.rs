@@ -19,6 +19,19 @@ fn run_in(data_home: Option<&Path>, args: &[&str]) -> (String, String, i32) {
     (stdout, stderr, code)
 }
 
+fn run_with_config(config: &Path, args: &[&str]) -> (String, String, i32) {
+    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
+        .env("ASOBY_CONFIG", config)
+        .args(args)
+        .output()
+        .expect("failed to run asoby");
+    (
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+        output.status.code().unwrap_or(-1),
+    )
+}
+
 fn write_state(data_home: &Path, core: &str, game: &str, name: &str) -> std::path::PathBuf {
     let dir = data_home.join("asoby").join("states").join(core).join(game);
     std::fs::create_dir_all(&dir).unwrap();
@@ -108,8 +121,47 @@ fn help_shows_examples() {
 }
 
 #[test]
+fn subcommand_help_shows_examples() {
+    for (args, examples) in [
+        (
+            &["core", "--help"][..],
+            &["asoby core install mgba", "asoby core update"][..],
+        ),
+        (
+            &["config", "--help"],
+            &[
+                "asoby config list",
+                "asoby config edit",
+                "asoby config get rewind.enabled",
+                "asoby config set rewind.buffer_size_mb 64",
+                "asoby config unset rewind.buffer_size_mb",
+            ],
+        ),
+        (
+            &["state", "--help"],
+            &[
+                "asoby state list",
+                "asoby state list 'Pokemon Emerald.gba' --core mgba",
+            ],
+        ),
+    ] {
+        let (stdout, stderr, code) = run(args);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("Examples:"));
+        for example in examples {
+            assert!(stdout.contains(example), "missing {example:?} in {args:?}");
+        }
+    }
+}
+
+#[test]
 fn help_has_no_ansi_styling() {
-    for args in [&["--help"][..], &["state", "--help"], &["core", "--help"]] {
+    for args in [
+        &["--help"][..],
+        &["config", "--help"],
+        &["state", "--help"],
+        &["core", "--help"],
+    ] {
         let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
             .env("CLICOLOR_FORCE", "1")
             .args(args)
@@ -362,4 +414,261 @@ fn asoby_config_loads_the_explicit_path() {
         stderr.contains("failed to parse config"),
         "unexpected stderr: {stderr}"
     );
+}
+
+#[test]
+fn config_help_lists_supported_operations() {
+    let (stdout, _stderr, code) = run(&["config", "--help"]);
+
+    assert_eq!(code, 0);
+    for operation in ["list", "edit", "get", "set", "unset"] {
+        assert!(stdout.contains(operation));
+    }
+    assert!(!stdout.contains("-e"));
+}
+
+#[test]
+fn config_list_shows_supported_keys_values_and_sources() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+    std::fs::write(&config, "[rewind]\nenabled = false\n").unwrap();
+
+    let (stdout, stderr, code) = run_with_config(&config, &["config", "list"]);
+
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.starts_with("KEY"));
+    assert_eq!(stdout.lines().count(), 25);
+    let configured = stdout
+        .lines()
+        .find(|line| line.starts_with("rewind.enabled"))
+        .unwrap();
+    assert!(configured.contains("false"));
+    assert!(configured.ends_with("config"));
+    let default = stdout
+        .lines()
+        .find(|line| line.starts_with("input.a"))
+        .unwrap();
+    assert!(default.contains("x"));
+    assert!(default.ends_with("default"));
+    let optional = stdout
+        .lines()
+        .find(|line| line.starts_with("input.l "))
+        .unwrap();
+    assert!(optional.contains("<unset>"));
+    assert!(optional.ends_with("default"));
+}
+
+#[test]
+fn config_get_prints_effective_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("missing").join("config.toml");
+
+    let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "input.a"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "x\n");
+
+    let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "rewind.enabled"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "true\n");
+
+    let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "input.l"]);
+    assert_ne!(code, 0);
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("is unset"));
+}
+
+#[test]
+fn config_set_creates_minimal_typed_overrides() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("nested").join("config.toml");
+
+    let (stdout, stderr, code) =
+        run_with_config(&config, &["config", "set", "rewind.buffer_size_mb", "64"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "rewind.buffer_size_mb = 64\n");
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "[rewind]\nbuffer_size_mb = 64\n"
+    );
+
+    let (stdout, stderr, code) =
+        run_with_config(&config, &["config", "set", "state.save_on_exit", "true"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "state.save_on_exit = true\n");
+    let contents = std::fs::read_to_string(&config).unwrap();
+    assert!(contents.contains("buffer_size_mb = 64"));
+    assert!(contents.contains("save_on_exit = true"));
+}
+
+#[test]
+fn config_set_preserves_comments_and_rejects_invalid_candidates() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+    std::fs::write(
+        &config,
+        "# controls rewind\n[rewind]\nenabled = true # keep this\n\n[input]\na = \"v\"\n",
+    )
+    .unwrap();
+
+    let (_stdout, stderr, code) =
+        run_with_config(&config, &["config", "set", "rewind.granularity", "4"]);
+    assert_eq!(code, 0, "{stderr}");
+    let valid = std::fs::read_to_string(&config).unwrap();
+    assert!(valid.contains("# controls rewind"));
+    assert!(valid.contains("enabled = true # keep this"));
+    assert!(valid.contains("granularity = 4"));
+
+    let (_stdout, stderr, code) = run_with_config(&config, &["config", "set", "input.b", "v"]);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("already bound"));
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), valid);
+
+    let (_stdout, stderr, code) =
+        run_with_config(&config, &["config", "set", "rewind.enabled", "yes"]);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("expected true or false"));
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), valid);
+}
+
+#[cfg(unix)]
+#[test]
+fn config_set_preserves_file_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+    std::fs::write(&config, "[rewind]\nenabled = true\n").unwrap();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+    let (_stdout, stderr, code) =
+        run_with_config(&config, &["config", "set", "rewind.enabled", "false"]);
+
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(
+        std::fs::metadata(&config).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+}
+
+#[test]
+fn config_unset_restores_defaults_and_is_idempotent() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+    std::fs::write(
+        &config,
+        "input = { l = \"q\" }\n[rewind]\nenabled = false\n",
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_with_config(&config, &["config", "unset", "rewind.enabled"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "rewind.enabled = true\n");
+
+    let (stdout, stderr, code) = run_with_config(&config, &["config", "unset", "rewind.enabled"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "rewind.enabled = true\n");
+
+    let (stdout, stderr, code) = run_with_config(&config, &["config", "unset", "input.l"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "input.l = <unset>\n");
+    assert!(!std::fs::read_to_string(&config).unwrap().contains("l ="));
+}
+
+#[test]
+fn config_mutations_reject_unknown_keys_and_malformed_files() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+
+    let (_stdout, stderr, code) =
+        run_with_config(&config, &["config", "set", "rewind.unknown", "1"]);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("unknown config key"));
+    assert!(!config.exists());
+
+    let (_stdout, stderr, code) =
+        run_with_config(&config, &["config", "get", "rewind.buffer_size"]);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("Did you mean \"rewind.buffer_size_mb\"?"));
+
+    std::fs::write(&config, "[rewind\n").unwrap();
+    let original = std::fs::read_to_string(&config).unwrap();
+    let (_stdout, stderr, code) =
+        run_with_config(&config, &["config", "set", "rewind.enabled", "false"]);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("failed to parse config"));
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
+}
+
+#[cfg(unix)]
+#[test]
+fn config_edit_creates_and_validates_the_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("nested").join("config.toml");
+    let editor = directory.path().join("fake editor");
+    std::fs::write(
+        &editor,
+        "#!/bin/sh\nprintf '[state]\\nsave_on_exit = true\\n' > \"$1\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
+        .env("ASOBY_CONFIG", &config)
+        .env("VISUAL", format!("'{}'", editor.display()))
+        .env("EDITOR", "false")
+        .args(["config", "edit"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "[state]\nsave_on_exit = true\n"
+    );
+
+    std::fs::write(&editor, "#!/bin/sh\nprintf '[state\\n' > \"$1\"\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
+        .env("ASOBY_CONFIG", &config)
+        .env("VISUAL", format!("'{}'", editor.display()))
+        .args(["config", "edit"])
+        .output()
+        .unwrap();
+    assert_ne!(output.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("failed to parse config"));
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), "[state\n");
+}
+
+#[test]
+fn config_edit_requires_an_editor() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
+        .env("ASOBY_CONFIG", &config)
+        .env_remove("VISUAL")
+        .env_remove("EDITOR")
+        .args(["config", "edit"])
+        .output()
+        .unwrap();
+
+    assert_ne!(output.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("VISUAL and EDITOR are not set"));
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), "");
+}
+
+#[cfg(unix)]
+#[test]
+fn config_edit_reports_editor_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
+        .env("ASOBY_CONFIG", &config)
+        .env("VISUAL", "false")
+        .args(["config", "edit"])
+        .output()
+        .unwrap();
+
+    assert_ne!(output.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("exited unsuccessfully"));
 }

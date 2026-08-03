@@ -19,6 +19,8 @@ libc = "0.2"
 libloading = "0.8"
 ringbuf = "0.4"
 serde = { version = "1", features = ["derive"] }
+shell-words = "1"
 tempfile = "3"
 toml = "0.8"
+toml_edit = "0.22"
 viuer = "0.11"

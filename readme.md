@@ -2,7 +2,7 @@
 
 ## Overview
 
-Asoby is a command-line emulator that plays retro games in the terminal:
+Asoby is a command-line emulator that runs retro games in the terminal.
 
 ```sh
 asoby 'Super Mario Bros.zip'

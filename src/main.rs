@@ -24,6 +24,7 @@ use std::path::PathBuf;
   asoby 'Super Castlevania IV.zip' -c snes9x         Run with an explicit core
   asoby 'Super Metroid.sfc' --state ~/backup.state   Load a save state at startup
   asoby core install genesis_plus_gx                 Install a libretro core
+  asoby config set rewind.buffer_size_mb 64          Set a configuration value
   asoby state list 'Pokemon Emerald.gba' --core mgba List saved states, filtered"
 )]
 struct Args {
@@ -87,16 +88,63 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    #[command(about = "Manage libretro cores", disable_help_subcommand = true)]
+    #[command(
+        about = "Manage configuration",
+        disable_help_subcommand = true,
+        after_help = "Examples:
+  asoby config list                         List supported keys and effective values
+  asoby config edit                         Open the config in $VISUAL or $EDITOR
+  asoby config get rewind.enabled           Print the effective rewind setting
+  asoby config set rewind.buffer_size_mb 64 Override the rewind buffer size
+  asoby config unset rewind.buffer_size_mb  Restore the default rewind buffer size"
+    )]
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+    #[command(
+        about = "Manage libretro cores",
+        disable_help_subcommand = true,
+        after_help = "Examples:
+  asoby core list                List installed cores
+  asoby core install mgba        Install the mGBA core
+  asoby core update              Update every installed core
+  asoby core remove mgba         Remove the mGBA core"
+    )]
     Core {
         #[command(subcommand)]
         action: CoreAction,
     },
-    #[command(about = "Manage save states", disable_help_subcommand = true)]
+    #[command(
+        about = "Manage save states",
+        disable_help_subcommand = true,
+        after_help = "Examples:
+  asoby state list                                      List every managed save state
+  asoby state list 'Pokemon Emerald.gba'                Filter by ROM filename
+  asoby state list 'Pokemon Emerald.gba' --core mgba    Filter by ROM and core"
+    )]
     State {
         #[command(subcommand)]
         action: StateAction,
     },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    #[command(about = "List supported configuration keys and effective values")]
+    List,
+    #[command(about = "Open the configuration file in an editor")]
+    Edit,
+    #[command(about = "Print the effective value of a configuration key")]
+    Get { key: String },
+    #[command(about = "Set a configuration override")]
+    Set {
+        key: String,
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+    },
+    #[command(about = "Remove a configuration override")]
+    Unset { key: String },
 }
 
 #[derive(Subcommand)]
@@ -126,6 +174,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut command = <Args as clap::CommandFactory>::command().color(clap::ColorChoice::Never);
     let mut matches = command.get_matches_mut();
     let args = Args::from_arg_matches_mut(&mut matches)?;
+
+    if let Some(Command::Config { action }) = args.command {
+        let result = match action {
+            ConfigAction::List => commands::config::list(),
+            ConfigAction::Edit => commands::config::edit(),
+            ConfigAction::Get { key } => commands::config::get(&key),
+            ConfigAction::Set { key, value } => commands::config::set(&key, &value),
+            ConfigAction::Unset { key } => commands::config::unset(&key),
+        };
+        if let Err(error) = result {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     if let Some(Command::Core { action }) = args.command {
         match action {

@@ -3,10 +3,12 @@ use std::error::Error;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use toml_edit::{DocumentMut, Item, Table};
 
-#[derive(Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Config {
     input: InputConfig,
@@ -14,7 +16,7 @@ struct Config {
     state: StateConfig,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct StateConfig {
     save_on_exit: bool,
@@ -25,7 +27,7 @@ pub struct StateSettings {
     pub save_on_exit: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RewindConfig {
     enabled: bool,
@@ -57,7 +59,7 @@ pub struct Settings {
     pub state: StateSettings,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct InputConfig {
     up: String,
@@ -117,6 +119,10 @@ pub enum ConfigError {
         path: PathBuf,
         source: io::Error,
     },
+    Write {
+        path: PathBuf,
+        source: io::Error,
+    },
     Parse {
         path: PathBuf,
         source: toml::de::Error,
@@ -125,6 +131,23 @@ pub enum ConfigError {
         path: PathBuf,
         reason: String,
     },
+    UnknownKey {
+        key: String,
+        suggestion: Option<&'static str>,
+    },
+    UnsetKey(String),
+    InvalidValue {
+        key: String,
+        value: String,
+        expected: &'static str,
+    },
+    EditorUnavailable,
+    InvalidEditor(String),
+    EditorLaunch {
+        editor: String,
+        source: io::Error,
+    },
+    EditorFailed(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -139,6 +162,13 @@ impl fmt::Display for ConfigError {
                     path.display()
                 )
             }
+            Self::Write { path, source } => {
+                write!(
+                    formatter,
+                    "failed to write config {}: {source}",
+                    path.display()
+                )
+            }
             Self::Parse { path, source } => {
                 write!(
                     formatter,
@@ -149,6 +179,34 @@ impl fmt::Display for ConfigError {
             Self::Invalid { path, reason } => {
                 write!(formatter, "invalid config {}: {reason}", path.display())
             }
+            Self::UnknownKey { key, suggestion } => {
+                write!(formatter, "unknown config key \"{key}\"")?;
+                if let Some(suggestion) = suggestion {
+                    write!(formatter, "\nDid you mean \"{suggestion}\"?")?;
+                }
+                Ok(())
+            }
+            Self::UnsetKey(key) => write!(formatter, "config key \"{key}\" is unset"),
+            Self::InvalidValue {
+                key,
+                value,
+                expected,
+            } => write!(
+                formatter,
+                "invalid value \"{value}\" for config key \"{key}\": expected {expected}"
+            ),
+            Self::EditorUnavailable => {
+                write!(formatter, "VISUAL and EDITOR are not set")
+            }
+            Self::InvalidEditor(editor) => {
+                write!(formatter, "invalid editor command \"{editor}\"")
+            }
+            Self::EditorLaunch { editor, source } => {
+                write!(formatter, "failed to launch editor \"{editor}\": {source}")
+            }
+            Self::EditorFailed(editor) => {
+                write!(formatter, "editor \"{editor}\" exited unsuccessfully")
+            }
         }
     }
 }
@@ -156,7 +214,9 @@ impl fmt::Display for ConfigError {
 impl Error for ConfigError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Read { source, .. } => Some(source),
+            Self::Read { source, .. }
+            | Self::Write { source, .. }
+            | Self::EditorLaunch { source, .. } => Some(source),
             Self::Parse { source, .. } => Some(source),
             _ => None,
         }
@@ -234,10 +294,18 @@ fn load_settings_from(path: &Path) -> Result<Settings, ConfigError> {
 }
 
 fn parse_settings(contents: &str, path: &Path) -> Result<Settings, ConfigError> {
-    let config: Config = toml::from_str(contents).map_err(|source| ConfigError::Parse {
+    let config = parse_config(contents, path)?;
+    settings_from_config(config, path)
+}
+
+fn parse_config(contents: &str, path: &Path) -> Result<Config, ConfigError> {
+    toml::from_str(contents).map_err(|source| ConfigError::Parse {
         path: path.to_path_buf(),
         source,
-    })?;
+    })
+}
+
+fn settings_from_config(config: Config, path: &Path) -> Result<Settings, ConfigError> {
     validate_rewind(&config.rewind, path)?;
     let rewind = RewindSettings {
         enabled: config.rewind.enabled,
@@ -296,6 +364,433 @@ fn parse_settings(contents: &str, path: &Path) -> Result<Settings, ConfigError> 
             save_on_exit: config.state.save_on_exit,
         },
     })
+}
+
+enum ConfigValue {
+    String(String),
+    Boolean(bool),
+    Integer(i64),
+}
+
+impl ConfigValue {
+    fn plain(&self) -> String {
+        match self {
+            Self::String(value) => value.clone(),
+            Self::Boolean(value) => value.to_string(),
+            Self::Integer(value) => value.to_string(),
+        }
+    }
+
+    fn into_item(self) -> Item {
+        match self {
+            Self::String(value) => toml_edit::value(value),
+            Self::Boolean(value) => toml_edit::value(value),
+            Self::Integer(value) => toml_edit::value(value),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ConfigValueKind {
+    String,
+    Boolean,
+    Integer,
+}
+
+struct ConfigKey {
+    name: &'static str,
+    kind: ConfigValueKind,
+    value: fn(&Config) -> Option<ConfigValue>,
+}
+
+const CONFIG_KEYS: &[ConfigKey] = &[
+    ConfigKey {
+        name: "input.up",
+        kind: ConfigValueKind::String,
+        value: |config| Some(ConfigValue::String(config.input.up.clone())),
+    },
+    ConfigKey {
+        name: "input.down",
+        kind: ConfigValueKind::String,
+        value: |config| Some(ConfigValue::String(config.input.down.clone())),
+    },
+    ConfigKey {
+        name: "input.left",
+        kind: ConfigValueKind::String,
+        value: |config| Some(ConfigValue::String(config.input.left.clone())),
+    },
+    ConfigKey {
+        name: "input.right",
+        kind: ConfigValueKind::String,
+        value: |config| Some(ConfigValue::String(config.input.right.clone())),
+    },
+    ConfigKey {
+        name: "input.a",
+        kind: ConfigValueKind::String,
+        value: |config| Some(ConfigValue::String(config.input.a.clone())),
+    },
+    ConfigKey {
+        name: "input.b",
+        kind: ConfigValueKind::String,
+        value: |config| Some(ConfigValue::String(config.input.b.clone())),
+    },
+    ConfigKey {
+        name: "input.x",
+        kind: ConfigValueKind::String,
+        value: |config| Some(ConfigValue::String(config.input.x.clone())),
+    },
+    ConfigKey {
+        name: "input.y",
+        kind: ConfigValueKind::String,
+        value: |config| Some(ConfigValue::String(config.input.y.clone())),
+    },
+    ConfigKey {
+        name: "input.start",
+        kind: ConfigValueKind::String,
+        value: |config| Some(ConfigValue::String(config.input.start.clone())),
+    },
+    ConfigKey {
+        name: "input.select",
+        kind: ConfigValueKind::String,
+        value: |config| Some(ConfigValue::String(config.input.select.clone())),
+    },
+    ConfigKey {
+        name: "input.l",
+        kind: ConfigValueKind::String,
+        value: |config| config.input.l.clone().map(ConfigValue::String),
+    },
+    ConfigKey {
+        name: "input.r",
+        kind: ConfigValueKind::String,
+        value: |config| config.input.r.clone().map(ConfigValue::String),
+    },
+    ConfigKey {
+        name: "input.l2",
+        kind: ConfigValueKind::String,
+        value: |config| config.input.l2.clone().map(ConfigValue::String),
+    },
+    ConfigKey {
+        name: "input.r2",
+        kind: ConfigValueKind::String,
+        value: |config| config.input.r2.clone().map(ConfigValue::String),
+    },
+    ConfigKey {
+        name: "input.l3",
+        kind: ConfigValueKind::String,
+        value: |config| config.input.l3.clone().map(ConfigValue::String),
+    },
+    ConfigKey {
+        name: "input.r3",
+        kind: ConfigValueKind::String,
+        value: |config| config.input.r3.clone().map(ConfigValue::String),
+    },
+    ConfigKey {
+        name: "input.quit",
+        kind: ConfigValueKind::String,
+        value: |config| Some(ConfigValue::String(config.input.quit.clone())),
+    },
+    ConfigKey {
+        name: "input.rewind",
+        kind: ConfigValueKind::String,
+        value: |config| Some(ConfigValue::String(config.input.rewind.clone())),
+    },
+    ConfigKey {
+        name: "input.save_state",
+        kind: ConfigValueKind::String,
+        value: |config| Some(ConfigValue::String(config.input.save_state.clone())),
+    },
+    ConfigKey {
+        name: "input.load_state",
+        kind: ConfigValueKind::String,
+        value: |config| Some(ConfigValue::String(config.input.load_state.clone())),
+    },
+    ConfigKey {
+        name: "rewind.enabled",
+        kind: ConfigValueKind::Boolean,
+        value: |config| Some(ConfigValue::Boolean(config.rewind.enabled)),
+    },
+    ConfigKey {
+        name: "rewind.granularity",
+        kind: ConfigValueKind::Integer,
+        value: |config| {
+            Some(ConfigValue::Integer(
+                i64::try_from(config.rewind.granularity).unwrap_or(i64::MAX),
+            ))
+        },
+    },
+    ConfigKey {
+        name: "rewind.buffer_size_mb",
+        kind: ConfigValueKind::Integer,
+        value: |config| {
+            Some(ConfigValue::Integer(
+                i64::try_from(config.rewind.buffer_size_mb).unwrap_or(i64::MAX),
+            ))
+        },
+    },
+    ConfigKey {
+        name: "state.save_on_exit",
+        kind: ConfigValueKind::Boolean,
+        value: |config| Some(ConfigValue::Boolean(config.state.save_on_exit)),
+    },
+];
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    let mut previous: Vec<usize> = (0..=right.chars().count()).collect();
+    for (left_index, left_char) in left.chars().enumerate() {
+        let mut current = vec![left_index + 1];
+        for (right_index, right_char) in right.chars().enumerate() {
+            current.push(std::cmp::min(
+                std::cmp::min(current[right_index] + 1, previous[right_index + 1] + 1),
+                previous[right_index] + usize::from(left_char != right_char),
+            ));
+        }
+        previous = current;
+    }
+    previous.last().copied().unwrap_or_default()
+}
+
+fn unknown_key(key: &str) -> ConfigError {
+    let max_distance = if key.len() < 8 { 2 } else { 3 };
+    let suggestion = CONFIG_KEYS
+        .iter()
+        .map(|candidate| (candidate.name, edit_distance(key, candidate.name)))
+        .filter(|(_, distance)| *distance <= max_distance)
+        .min_by_key(|(_, distance)| *distance)
+        .map(|(name, _)| name);
+    ConfigError::UnknownKey {
+        key: key.into(),
+        suggestion,
+    }
+}
+
+fn config_key(key: &str) -> Result<&'static ConfigKey, ConfigError> {
+    CONFIG_KEYS
+        .iter()
+        .find(|candidate| candidate.name == key)
+        .ok_or_else(|| unknown_key(key))
+}
+
+fn parse_value(key: &ConfigKey, value: &str) -> Result<ConfigValue, ConfigError> {
+    match key.kind {
+        ConfigValueKind::String => Ok(ConfigValue::String(value.into())),
+        ConfigValueKind::Boolean => {
+            value
+                .parse()
+                .map(ConfigValue::Boolean)
+                .map_err(|_| ConfigError::InvalidValue {
+                    key: key.name.into(),
+                    value: value.into(),
+                    expected: "true or false",
+                })
+        }
+        ConfigValueKind::Integer => {
+            value
+                .parse()
+                .map(ConfigValue::Integer)
+                .map_err(|_| ConfigError::InvalidValue {
+                    key: key.name.into(),
+                    value: value.into(),
+                    expected: "a decimal integer",
+                })
+        }
+    }
+}
+
+fn read_config(path: &Path) -> Result<(Option<String>, Config), ConfigError> {
+    match fs::read_to_string(path) {
+        Ok(contents) => {
+            let config = parse_config(&contents, path)?;
+            settings_from_config(config.clone(), path)?;
+            Ok((Some(contents), config))
+        }
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok((None, Config::default())),
+        Err(source) => Err(ConfigError::Read {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn parse_document(contents: &str, path: &Path) -> Result<DocumentMut, ConfigError> {
+    contents.parse().map_err(|error| ConfigError::Invalid {
+        path: path.to_path_buf(),
+        reason: format!("could not edit TOML document: {error}"),
+    })
+}
+
+fn validated_document(document: &DocumentMut, path: &Path) -> Result<Config, ConfigError> {
+    let config = parse_config(&document.to_string(), path)?;
+    settings_from_config(config.clone(), path)?;
+    Ok(config)
+}
+
+fn key_parts(key: &ConfigKey) -> (&str, &str) {
+    key.name.split_once('.').unwrap()
+}
+
+fn key_is_stored(document: &DocumentMut, key: &ConfigKey) -> bool {
+    let (section, name) = key_parts(key);
+    document
+        .get(section)
+        .and_then(Item::as_table_like)
+        .is_some_and(|table| table.contains_key(name))
+}
+
+fn parent_directory(path: &Path) -> &Path {
+    path.parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+
+fn write_document(path: &Path, document: &DocumentMut) -> Result<(), ConfigError> {
+    let parent = parent_directory(path);
+    fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let permissions = fs::metadata(path)
+        .ok()
+        .map(|metadata| metadata.permissions());
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(parent).map_err(|source| ConfigError::Write {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    temporary
+        .write_all(document.to_string().as_bytes())
+        .and_then(|_| temporary.as_file().sync_all())
+        .map_err(|source| ConfigError::Write {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if let Some(permissions) = permissions {
+        temporary
+            .as_file()
+            .set_permissions(permissions)
+            .map_err(|source| ConfigError::Write {
+                path: path.to_path_buf(),
+                source,
+            })?;
+    }
+    temporary
+        .persist(path)
+        .map_err(|error| ConfigError::Write {
+            path: path.to_path_buf(),
+            source: error.error,
+        })?;
+    Ok(())
+}
+
+pub struct ConfigEntry {
+    pub key: &'static str,
+    pub value: String,
+    pub configured: bool,
+}
+
+pub fn list() -> Result<Vec<ConfigEntry>, ConfigError> {
+    let path = config_path()?;
+    let (contents, config) = read_config(&path)?;
+    let document = parse_document(contents.as_deref().unwrap_or(""), &path)?;
+    Ok(CONFIG_KEYS
+        .iter()
+        .map(|key| ConfigEntry {
+            key: key.name,
+            value: (key.value)(&config)
+                .map(|value| value.plain())
+                .unwrap_or_else(|| "<unset>".into()),
+            configured: key_is_stored(&document, key),
+        })
+        .collect())
+}
+
+pub fn get(key: &str) -> Result<String, ConfigError> {
+    let key = config_key(key)?;
+    let path = config_path()?;
+    let (_, config) = read_config(&path)?;
+    (key.value)(&config)
+        .map(|value| value.plain())
+        .ok_or_else(|| ConfigError::UnsetKey(key.name.into()))
+}
+
+pub fn set(key: &str, value: &str) -> Result<String, ConfigError> {
+    let key = config_key(key)?;
+    let value = parse_value(key, value)?;
+    let path = config_path()?;
+    let (contents, _) = read_config(&path)?;
+    let mut document = parse_document(contents.as_deref().unwrap_or(""), &path)?;
+    let (section, name) = key_parts(key);
+    if !document.contains_key(section) {
+        document[section] = Item::Table(Table::new());
+    }
+    document[section][name] = value.into_item();
+    let config = validated_document(&document, &path)?;
+    let effective = (key.value)(&config).unwrap().plain();
+    write_document(&path, &document)?;
+    Ok(effective)
+}
+
+pub fn unset(key: &str) -> Result<Option<String>, ConfigError> {
+    let key = config_key(key)?;
+    let path = config_path()?;
+    let (contents, config) = read_config(&path)?;
+    let (section, name) = key_parts(key);
+    let Some(contents) = contents else {
+        return Ok((key.value)(&config).map(|value| value.plain()));
+    };
+    let mut document = parse_document(&contents, &path)?;
+    let removed = document
+        .get_mut(section)
+        .and_then(Item::as_table_like_mut)
+        .and_then(|table| table.remove(name))
+        .is_some();
+    let config = validated_document(&document, &path)?;
+    if removed {
+        write_document(&path, &document)?;
+    }
+    Ok((key.value)(&config).map(|value| value.plain()))
+}
+
+pub fn edit() -> Result<(), ConfigError> {
+    let path = config_path()?;
+    fs::create_dir_all(parent_directory(&path)).map_err(|source| ConfigError::Write {
+        path: path.clone(),
+        source,
+    })?;
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|source| ConfigError::Write {
+            path: path.clone(),
+            source,
+        })?;
+    let editor = ["VISUAL", "EDITOR"]
+        .into_iter()
+        .find_map(|name| {
+            std::env::var(name)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .ok_or(ConfigError::EditorUnavailable)?;
+    let mut words = shell_words::split(&editor)
+        .map_err(|_| ConfigError::InvalidEditor(editor.clone()))?
+        .into_iter();
+    let program = words
+        .next()
+        .ok_or_else(|| ConfigError::InvalidEditor(editor.clone()))?;
+    let status = Command::new(&program)
+        .args(words)
+        .arg(&path)
+        .status()
+        .map_err(|source| ConfigError::EditorLaunch {
+            editor: editor.clone(),
+            source,
+        })?;
+    if !status.success() {
+        return Err(ConfigError::EditorFailed(editor));
+    }
+    load_settings_from(&path)?;
+    Ok(())
 }
 
 fn validate_rewind(rewind: &RewindConfig, path: &Path) -> Result<(), ConfigError> {

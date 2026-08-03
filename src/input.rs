@@ -230,8 +230,8 @@ impl InputBindings {
         self.rewind_enabled
     }
 
-    pub fn status_line(&self) -> String {
-        let mut items = Vec::with_capacity(18);
+    pub fn gamepad_status_line(&self) -> String {
+        let mut items = Vec::with_capacity(16);
         for (label, button) in [
             ("↑", BUTTON_UP),
             ("↓", BUTTON_DOWN),
@@ -254,12 +254,17 @@ impl InputBindings {
                 items.push(format!("{label}-{}", binding.key_name));
             }
         }
-        items.push(format!("Exit-{}", self.quit_name));
+        items.join(" ")
+    }
+
+    pub fn controls_status_line(&self) -> String {
+        let mut items = Vec::with_capacity(4);
+        items.push(format!("Save-{}", self.save_state_name));
+        items.push(format!("Load-{}", self.load_state_name));
         if self.rewind_enabled {
             items.push(format!("Rewind-{}", self.rewind_name));
         }
-        items.push(format!("Save-{}", self.save_state_name));
-        items.push(format!("Load-{}", self.load_state_name));
+        items.push(format!("Exit-{}", self.quit_name));
         items.join(" ")
     }
 }
@@ -1138,17 +1143,17 @@ mod tests {
     }
 
     #[test]
-    fn status_line_shows_default_keybindings() {
-        let status = InputBindings::default().status_line();
+    fn gamepad_status_line_shows_default_keybindings() {
+        let status = InputBindings::default().gamepad_status_line();
 
         assert_eq!(
             status,
-            "↑-up ↓-down ←-left →-right Select-rshift Start-enter X-s Y-a A-x B-z Exit-escape Rewind-r Save-f2 Load-f4"
+            "↑-up ↓-down ←-left →-right Select-rshift Start-enter X-s Y-a A-x B-z"
         );
     }
 
     #[test]
-    fn status_line_shows_only_bound_optional_buttons() {
+    fn gamepad_status_line_shows_only_bound_optional_buttons() {
         let bindings = InputBindings::new(
             &[
                 ("l", BUTTON_L, "q"),
@@ -1167,8 +1172,18 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            bindings.status_line(),
-            "L1-q L2-w R1-e R2-u L3-t R3-y Exit-esc Rewind-p Save-f2 Load-f4"
+            bindings.gamepad_status_line(),
+            "L1-q L2-w R1-e R2-u L3-t R3-y"
+        );
+    }
+
+    #[test]
+    fn controls_status_line_uses_action_order() {
+        let bindings = bindings(&[], "esc", "r", true);
+
+        assert_eq!(
+            bindings.controls_status_line(),
+            "Save-f2 Load-f4 Rewind-r Exit-esc"
         );
     }
 
@@ -1236,7 +1251,7 @@ mod tests {
     fn disabled_rewind_hides_the_hotkey() {
         let bindings = bindings(&[], "esc", "r", false);
 
-        assert_eq!(bindings.status_line(), "Exit-esc Save-f2 Load-f4");
+        assert_eq!(bindings.controls_status_line(), "Save-f2 Load-f4 Exit-esc");
     }
 
     #[test]

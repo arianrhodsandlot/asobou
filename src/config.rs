@@ -14,6 +14,7 @@ struct Config {
     input: InputConfig,
     rewind: RewindConfig,
     state: StateConfig,
+    status: StatusConfig,
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -25,6 +26,31 @@ struct StateConfig {
 #[derive(Clone, Copy, Debug)]
 pub struct StateSettings {
     pub save_on_exit: bool,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct StatusConfig {
+    enabled: bool,
+    gamepad: bool,
+    controls: bool,
+}
+
+impl Default for StatusConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            gamepad: true,
+            controls: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StatusSettings {
+    pub enabled: bool,
+    pub gamepad: bool,
+    pub controls: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -57,6 +83,7 @@ pub struct Settings {
     pub input_bindings: crate::input::InputBindings,
     pub rewind: RewindSettings,
     pub state: StateSettings,
+    pub status: StatusSettings,
 }
 
 #[derive(Clone, Deserialize)]
@@ -280,6 +307,11 @@ fn load_settings_from(path: &Path) -> Result<Settings, ConfigError> {
                 state: StateSettings {
                     save_on_exit: false,
                 },
+                status: StatusSettings {
+                    enabled: true,
+                    gamepad: true,
+                    controls: true,
+                },
             });
         }
         Err(source) => {
@@ -362,6 +394,11 @@ fn settings_from_config(config: Config, path: &Path) -> Result<Settings, ConfigE
         rewind,
         state: StateSettings {
             save_on_exit: config.state.save_on_exit,
+        },
+        status: StatusSettings {
+            enabled: config.status.enabled,
+            gamepad: config.status.gamepad,
+            controls: config.status.controls,
         },
     })
 }
@@ -531,6 +568,21 @@ const CONFIG_KEYS: &[ConfigKey] = &[
         name: "state.save_on_exit",
         kind: ConfigValueKind::Boolean,
         value: |config| Some(ConfigValue::Boolean(config.state.save_on_exit)),
+    },
+    ConfigKey {
+        name: "status.enabled",
+        kind: ConfigValueKind::Boolean,
+        value: |config| Some(ConfigValue::Boolean(config.status.enabled)),
+    },
+    ConfigKey {
+        name: "status.gamepad",
+        kind: ConfigValueKind::Boolean,
+        value: |config| Some(ConfigValue::Boolean(config.status.gamepad)),
+    },
+    ConfigKey {
+        name: "status.controls",
+        kind: ConfigValueKind::Boolean,
+        value: |config| Some(ConfigValue::Boolean(config.status.controls)),
     },
 ];
 
@@ -874,6 +926,46 @@ mod tests {
     }
 
     #[test]
+    fn status_defaults_to_both_groups_visible() {
+        let settings = parse_settings("", Path::new("config.toml")).unwrap();
+
+        assert_eq!(
+            settings.status,
+            StatusSettings {
+                enabled: true,
+                gamepad: true,
+                controls: true,
+            }
+        );
+    }
+
+    #[test]
+    fn status_groups_are_independently_configurable() {
+        let settings = parse_settings(
+            "[status]\nenabled = true\ngamepad = false\ncontrols = true\n",
+            Path::new("config.toml"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            settings.status,
+            StatusSettings {
+                enabled: true,
+                gamepad: false,
+                controls: true,
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_status_config_fields_are_rejected() {
+        let error =
+            parse_settings("[status]\nsession = true\n", Path::new("config.toml")).unwrap_err();
+
+        assert!(error.to_string().contains("session"));
+    }
+
+    #[test]
     fn rewind_can_be_disabled() {
         let settings =
             parse_settings("[rewind]\nenabled = false\n", Path::new("config.toml")).unwrap();
@@ -953,7 +1045,7 @@ mod tests {
         assert!(
             settings
                 .input_bindings
-                .status_line()
+                .controls_status_line()
                 .contains("Save-f1 Load-f3")
         );
     }

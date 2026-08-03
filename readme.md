@@ -74,6 +74,11 @@ load_state = "f4"  # Load the newest state
 # l3 = "t"
 # r3 = "y"
 
+[status]
+enabled = true         # Show the on-screen keybinding status
+gamepad = true         # Show gamepad inputs on the upper status line
+controls = true        # Show save, load, rewind, and exit on the lower line
+
 [rewind]
 enabled = true          # Snapshot-based rewind
 granularity = 2         # Frames between snapshots
@@ -87,6 +92,12 @@ Rewind steps back while the rewind key is held. A higher `granularity` uses
 less memory and CPU but rewinds in coarser steps; once `buffer_size_mb` is
 reached the oldest snapshots are dropped. Disabling rewind frees the key for
 other bindings and hides it from the on-screen status line.
+
+The status text is centered and dimmed over the bottom of the rendered frame.
+Set `status.enabled` to `false` to hide both lines, or toggle `gamepad` and
+`controls` independently. Save and load notifications remain visible when the
+keybinding status is hidden. Notifications are anchored to the bottom-left and
+do not change the centered keybindings' position.
 
 Each input takes one standalone key, and a key cannot be assigned to more than
 one input. Key combinations such as `ctrl+x` are not supported.

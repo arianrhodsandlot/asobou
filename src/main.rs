@@ -237,6 +237,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rom,
         input_bindings: settings.input_bindings,
         rewind: settings.rewind,
+        status: settings.status,
         startup_state: args.state,
         save_on_exit: settings.state.save_on_exit,
     };

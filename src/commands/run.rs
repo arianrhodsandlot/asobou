@@ -14,6 +14,8 @@ static RUNNING: AtomicBool = AtomicBool::new(true);
 const TERMINAL_INPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 const TERMINAL_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const STATUS_MESSAGE_DURATION: Duration = Duration::from_secs(2);
+const RESET_STYLE: &str = "\x1b[0m";
+const DIM_STYLE: &str = "\x1b[2m";
 
 struct LatestFrameMailbox {
     state: Mutex<LatestFrameState>,
@@ -153,6 +155,7 @@ pub struct RunConfig {
     pub rom: PathBuf,
     pub input_bindings: crate::input::InputBindings,
     pub rewind: crate::config::RewindSettings,
+    pub status: crate::config::StatusSettings,
     pub startup_state: Option<PathBuf>,
     pub save_on_exit: bool,
 }
@@ -229,14 +232,61 @@ fn rewind_run_frame(core: &crate::emulation::libretro::Core, frame_mailbox: &Lat
     }
 }
 
-fn format_status_line(status: &str, message: Option<&str>, width: usize) -> String {
-    let mut line = String::new();
-    if let Some(message) = message {
-        line.push_str(message);
-        line.push_str("  ");
+fn format_status_line(status: &str, width: usize) -> String {
+    let clipped: String = status.chars().take(width).collect();
+    let padding = width.saturating_sub(clipped.chars().count()) / 2;
+    let mut output = format!("{:padding$}", "");
+    output.push_str(DIM_STYLE);
+    output.push_str(&clipped);
+    output.push_str(RESET_STYLE);
+    output
+}
+
+fn status_lines(
+    input_bindings: &crate::input::InputBindings,
+    settings: crate::config::StatusSettings,
+) -> Vec<String> {
+    if !settings.enabled {
+        return Vec::new();
     }
-    line.push_str(status);
-    line.chars().take(width).collect()
+    let mut lines = Vec::with_capacity(2);
+    if settings.gamepad {
+        lines.push(input_bindings.gamepad_status_line());
+    }
+    if settings.controls {
+        lines.push(input_bindings.controls_status_line());
+    }
+    lines
+}
+
+fn write_status_lines(
+    out: &mut dyn Write,
+    status_lines: &[String],
+    message: Option<&str>,
+    columns: u16,
+    rows: u16,
+) -> io::Result<()> {
+    if columns == 0 || rows == 0 || status_lines.is_empty() && message.is_none() {
+        return Ok(());
+    }
+    let available = usize::from(rows);
+    let first = status_lines.len().saturating_sub(available);
+    let visible_lines = &status_lines[first..];
+    let line_count = visible_lines.len().max(usize::from(message.is_some()));
+    let first_row = usize::from(rows) - line_count + 1;
+    for (index, status) in visible_lines.iter().enumerate() {
+        let line = format_status_line(status, usize::from(columns));
+        write!(
+            out,
+            "\x1b[{};1H{RESET_STYLE}\x1b[K{line}",
+            first_row + index
+        )?;
+    }
+    if let Some(message) = message {
+        let message: String = message.chars().take(usize::from(columns)).collect();
+        write!(out, "\x1b[{rows};1H{RESET_STYLE}{message}{RESET_STYLE}")?;
+    }
+    Ok(())
 }
 
 pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
@@ -249,6 +299,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         rom,
         input_bindings,
         rewind: rewind_settings,
+        status: status_settings,
         startup_state,
         save_on_exit,
     } = config;
@@ -382,7 +433,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         let terminal = TerminalGuard::enter()?;
-        let status = input_bindings.status_line();
+        let status_lines = status_lines(&input_bindings, status_settings);
         let frame_mailbox = Arc::new(LatestFrameMailbox::new());
         let render_mailbox = Arc::clone(&frame_mailbox);
         let status_messages = Arc::new(Mutex::new(None::<(String, Instant)>));
@@ -394,7 +445,6 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
                 while let Some(frame) = render_mailbox.receive() {
                     renderer.render(&frame, &mut stdout)?;
                     let (columns, rows) = crossterm::terminal::size()?;
-                    let width = usize::from(columns);
                     let message = {
                         let mut guard = status_messages_render.lock().unwrap();
                         match &*guard {
@@ -407,8 +457,13 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     };
-                    let line = format_status_line(&status, message.as_deref(), width);
-                    write!(stdout, "\x1b[{};1H\x1b[K{line:.width$}", rows)?;
+                    write_status_lines(
+                        &mut stdout,
+                        &status_lines,
+                        message.as_deref(),
+                        columns,
+                        rows,
+                    )?;
                     stdout.flush()?;
                 }
                 Ok(())
@@ -643,17 +698,105 @@ mod tests {
     }
 
     #[test]
-    fn status_line_shows_the_message_before_the_controls() {
-        let controls = "↑-up ↓-down ←-left →-right Select-rshift Start-enter X-s Y-a A-x B-z Exit-escape Rewind-r Save-f2 Load-f4";
+    fn status_line_centers_and_dims_controls() {
+        let line = format_status_line("Exit", 10);
 
-        let line = format_status_line(controls, Some("State saved"), 80);
-
-        assert!(line.starts_with("State saved  ↑-up"));
-        assert_eq!(line.chars().count(), 80);
+        assert_eq!(line, "   \x1b[2mExit\x1b[0m");
     }
 
     #[test]
-    fn status_line_without_a_message_is_not_padded() {
-        assert_eq!(format_status_line("Exit-escape", None, 20), "Exit-escape");
+    fn status_line_truncates_before_centering() {
+        let line = format_status_line("Exit-escape", 4);
+
+        assert_eq!(line, "\x1b[2mExit\x1b[0m");
+    }
+
+    #[test]
+    fn universal_status_switch_hides_both_groups() {
+        let lines = status_lines(
+            &crate::input::InputBindings::default(),
+            crate::config::StatusSettings {
+                enabled: false,
+                gamepad: true,
+                controls: true,
+            },
+        );
+
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn group_status_switches_are_independent() {
+        let lines = status_lines(
+            &crate::input::InputBindings::default(),
+            crate::config::StatusSettings {
+                enabled: true,
+                gamepad: false,
+                controls: true,
+            },
+        );
+
+        assert_eq!(lines, ["Save-f2 Load-f4 Rewind-r Exit-escape"]);
+    }
+
+    #[test]
+    fn status_rows_render_gamepad_above_controls() {
+        let lines = vec!["Game".to_string(), "Controls".to_string()];
+        let mut output = Vec::new();
+
+        write_status_lines(&mut output, &lines, None, 20, 2).unwrap();
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "\x1b[1;1H\x1b[0m\x1b[K        \x1b[2mGame\x1b[0m\x1b[2;1H\x1b[0m\x1b[K      \x1b[2mControls\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn one_row_terminal_prioritizes_controls() {
+        let lines = vec!["Game".to_string(), "Controls".to_string()];
+        let mut output = Vec::new();
+
+        write_status_lines(&mut output, &lines, None, 20, 1).unwrap();
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "\x1b[1;1H\x1b[0m\x1b[K      \x1b[2mControls\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn hidden_status_still_renders_a_message() {
+        let mut output = Vec::new();
+
+        write_status_lines(&mut output, &[], Some("Saved"), 10, 2).unwrap();
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "\x1b[2;1H\x1b[0mSaved\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn message_does_not_change_the_centered_controls_position() {
+        let lines = vec!["Controls".to_string()];
+        let mut output = Vec::new();
+
+        write_status_lines(&mut output, &lines, Some("Saved"), 20, 2).unwrap();
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "\x1b[2;1H\x1b[0m\x1b[K      \x1b[2mControls\x1b[0m\x1b[2;1H\x1b[0mSaved\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn zero_sized_terminal_does_not_render_status() {
+        let lines = vec!["Controls".to_string()];
+        let mut output = Vec::new();
+
+        write_status_lines(&mut output, &lines, Some("Saved"), 20, 0).unwrap();
+
+        assert!(output.is_empty());
     }
 }

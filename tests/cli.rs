@@ -437,7 +437,7 @@ fn config_list_shows_supported_keys_values_and_sources() {
 
     assert_eq!(code, 0, "{stderr}");
     assert!(stdout.starts_with("KEY"));
-    assert_eq!(stdout.lines().count(), 25);
+    assert_eq!(stdout.lines().count(), 28);
     let configured = stdout
         .lines()
         .find(|line| line.starts_with("rewind.enabled"))
@@ -471,6 +471,10 @@ fn config_get_prints_effective_values() {
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(stdout, "true\n");
 
+    let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "status.controls"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "true\n");
+
     let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "input.l"]);
     assert_ne!(code, 0);
     assert!(stdout.is_empty());
@@ -498,6 +502,16 @@ fn config_set_creates_minimal_typed_overrides() {
     let contents = std::fs::read_to_string(&config).unwrap();
     assert!(contents.contains("buffer_size_mb = 64"));
     assert!(contents.contains("save_on_exit = true"));
+
+    let (stdout, stderr, code) =
+        run_with_config(&config, &["config", "set", "status.gamepad", "false"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "status.gamepad = false\n");
+    assert!(
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .contains("gamepad = false")
+    );
 }
 
 #[test]

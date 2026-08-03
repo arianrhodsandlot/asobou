@@ -339,7 +339,8 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    let renderer = crate::renderer::create(renderer_mode, &rom, no_alt_screen)?;
+    let status_lines = status_lines(&input_bindings, status_settings);
+    let renderer = crate::renderer::create(renderer_mode, &rom, no_alt_screen, status_lines.len())?;
     let core = unsafe { crate::emulation::libretro::load_core(&core_path)? };
     let mut audio_backend = if muted {
         crate::audio::muted()
@@ -433,7 +434,6 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         let terminal = TerminalGuard::enter()?;
-        let status_lines = status_lines(&input_bindings, status_settings);
         let frame_mailbox = Arc::new(LatestFrameMailbox::new());
         let render_mailbox = Arc::clone(&frame_mailbox);
         let status_messages = Arc::new(Mutex::new(None::<(String, Instant)>));

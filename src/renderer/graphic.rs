@@ -12,13 +12,15 @@ const KITTY_CHUNK_SIZE: usize = 4096;
 pub struct GraphicRenderer {
     config: viuer::Config,
     screen_active: bool,
+    reserved_rows: usize,
 }
 
 impl GraphicRenderer {
-    pub fn new() -> Self {
+    pub fn new(reserved_rows: usize) -> Self {
         Self {
             config: viuer::Config::default(),
             screen_active: false,
+            reserved_rows,
         }
     }
 
@@ -44,7 +46,27 @@ impl GraphicRenderer {
     }
 
     fn render_kitty(&self, img: &DynamicImage, out: &mut dyn io::Write) -> io::Result<()> {
-        let display_size = viuer::resize(img, self.config.width, self.config.height);
+        let (columns, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        self.render_kitty_at(img, out, columns, rows)
+    }
+
+    fn render_kitty_at(
+        &self,
+        img: &DynamicImage,
+        out: &mut dyn io::Write,
+        terminal_columns: u16,
+        terminal_rows: u16,
+    ) -> io::Result<()> {
+        let available_rows = usize::from(terminal_rows).saturating_sub(self.reserved_rows);
+        if terminal_columns == 0 || available_rows == 0 {
+            return Ok(());
+        }
+        let height = self.config.height.map_or(available_rows, |height| {
+            usize::try_from(height)
+                .unwrap_or(usize::MAX)
+                .min(available_rows)
+        });
+        let display_size = viuer::resize(img, self.config.width, Some(height as u32));
         let columns = display_size.width();
         let rows = display_size.height().div_ceil(2);
         let pixels = img.to_rgb8();
@@ -71,9 +93,8 @@ impl GraphicRenderer {
             command.extend_from_slice(chunk);
             command.extend_from_slice(b"\x1b\\");
         }
-        let (tw, th) = crossterm::terminal::size().unwrap_or((80, 24));
-        let col = (tw as u32).saturating_sub(columns) / 2 + 1;
-        let row = (th as u32).saturating_sub(rows) / 2 + 1;
+        let col = u32::from(terminal_columns).saturating_sub(columns) / 2 + 1;
+        let row = (available_rows as u32).saturating_sub(rows) / 2 + 1;
         write!(
             command,
             "\x1b[{row};{col}H\x1b_Ga=p,i={},p={},c={},r={},C=1,q=2;\x1b\\\x1b[?2026l",
@@ -122,7 +143,7 @@ mod tests {
 
     #[test]
     fn kitty_stream_reuses_image_and_placement_ids() {
-        let mut renderer = GraphicRenderer::new();
+        let mut renderer = GraphicRenderer::new(0);
         renderer.config.width = Some(1);
         renderer.config.height = Some(1);
         let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(2, 2, Rgb([1, 2, 3])));
@@ -142,7 +163,7 @@ mod tests {
 
     #[test]
     fn kitty_stream_silences_every_image_chunk() {
-        let renderer = GraphicRenderer::new();
+        let renderer = GraphicRenderer::new(0);
         let img = DynamicImage::ImageRgb8(RgbImage::from_fn(64, 64, |x, y| {
             Rgb([x as u8, y as u8, (x ^ y) as u8])
         }));
@@ -159,5 +180,18 @@ mod tests {
         assert!(continuation_chunks.iter().all(
             |chunk| chunk.starts_with("\x1b_Gm=1,q=2;") || chunk.starts_with("\x1b_Gm=0,q=2;")
         ));
+    }
+
+    #[test]
+    fn kitty_stream_reserves_status_rows_below_the_image() {
+        let renderer = GraphicRenderer::new(2);
+        let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(200, 200, Rgb([1, 2, 3])));
+        let mut output = Vec::new();
+
+        renderer.render_kitty_at(&img, &mut output, 80, 24).unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("\x1b[1;19H"));
+        assert!(output.contains("c=44,r=22"));
     }
 }

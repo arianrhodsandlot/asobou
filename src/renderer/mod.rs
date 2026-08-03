@@ -31,6 +31,7 @@ pub fn create(
     mode: RendererMode,
     rom_path: &std::path::Path,
     no_alt_screen: bool,
+    reserved_rows: usize,
 ) -> io::Result<Box<dyn Renderer>> {
     let mode = match mode {
         RendererMode::Auto => auto::select(no_alt_screen),
@@ -44,7 +45,7 @@ pub fn create(
                 .unwrap_or("unknown");
             Ok(Box::new(debug::DebugRenderer::new(stem)))
         }
-        RendererMode::Graphic => Ok(Box::new(graphic::GraphicRenderer::new())),
+        RendererMode::Graphic => Ok(Box::new(graphic::GraphicRenderer::new(reserved_rows))),
         RendererMode::Block => Ok(Box::new(block::BlockRenderer::new(no_alt_screen))),
         RendererMode::Ascii => Ok(Box::new(ascii::AsciiRenderer::new(no_alt_screen))),
         RendererMode::Auto => unreachable!(),

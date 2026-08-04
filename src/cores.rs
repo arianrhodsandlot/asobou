@@ -6,31 +6,137 @@ use std::{fs, io};
 
 // ── Platform helpers ───────────────────────────────────────────────────────
 
-pub fn core_extension() -> &'static str {
-    match std::env::consts::OS {
-        "macos" => "dylib",
-        "linux" => "so",
+const BUILDBOT_BASE_URL: &str = "https://buildbot.libretro.com/nightly/";
+
+fn core_extension_for(os: &str) -> &'static str {
+    match os {
+        "macos" | "ios" => "dylib",
+        "linux" | "android" => "so",
         "windows" => "dll",
         _ => "so",
     }
 }
 
-pub fn buildbot_base_url() -> Option<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => {
-            Some("https://buildbot.libretro.com/nightly/apple/osx/arm64/latest/")
-        }
-        ("macos", "x86_64") => {
-            Some("https://buildbot.libretro.com/nightly/apple/osx/x86_64/latest/")
-        }
-        ("linux", "aarch64") => Some("https://buildbot.libretro.com/nightly/linux/aarch64/latest/"),
-        ("linux", "x86_64") => Some("https://buildbot.libretro.com/nightly/linux/x86_64/latest/"),
-        ("windows", "x86") => Some("https://buildbot.libretro.com/nightly/windows/x86/latest/"),
-        ("windows", "x86_64") => {
-            Some("https://buildbot.libretro.com/nightly/windows/x86_64/latest/")
-        }
+pub fn core_extension() -> &'static str {
+    core_extension_for(std::env::consts::OS)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BuildbotTarget {
+    path: &'static str,
+    archive_suffix: &'static str,
+}
+
+impl BuildbotTarget {
+    fn base_url(self) -> String {
+        format!("{BUILDBOT_BASE_URL}{}", self.path)
+    }
+
+    fn archive_name(self, name: &str, extension: &str) -> String {
+        format!("{name}{}.{extension}", self.archive_suffix)
+    }
+
+    fn installed_name(self, name: &str, extension: &str) -> String {
+        format!("{name}_libretro.{extension}")
+    }
+}
+
+const LINUX_AARCH64: BuildbotTarget = BuildbotTarget {
+    path: "linux/aarch64/latest/",
+    archive_suffix: "_libretro",
+};
+
+const LINUX_X86_64: BuildbotTarget = BuildbotTarget {
+    path: "linux/x86_64/latest/",
+    archive_suffix: "_libretro",
+};
+
+const LINUX_X86: BuildbotTarget = BuildbotTarget {
+    path: "linux/x86/latest/",
+    archive_suffix: "_libretro",
+};
+
+const LINUX_ARMHF: BuildbotTarget = BuildbotTarget {
+    path: "linux/armhf/latest/",
+    archive_suffix: "_libretro",
+};
+
+const MACOS_GENERIC: BuildbotTarget = BuildbotTarget {
+    path: "apple/osx/x86_64/latest/",
+    archive_suffix: "_libretro",
+};
+
+const MACOS_ARM64: BuildbotTarget = BuildbotTarget {
+    path: "apple/osx/arm64/latest/",
+    archive_suffix: "_libretro",
+};
+
+const MACOS_PPC: BuildbotTarget = BuildbotTarget {
+    path: "apple/osx/ppc/latest/",
+    archive_suffix: "_libretro",
+};
+
+const IOS: BuildbotTarget = BuildbotTarget {
+    path: "apple/ios/latest/",
+    archive_suffix: "_libretro_ios",
+};
+
+const WINDOWS_X86: BuildbotTarget = BuildbotTarget {
+    path: "windows/x86/latest/",
+    archive_suffix: "_libretro",
+};
+
+const WINDOWS_X86_64: BuildbotTarget = BuildbotTarget {
+    path: "windows/x86_64/latest/",
+    archive_suffix: "_libretro",
+};
+
+const ANDROID_ARM64: BuildbotTarget = BuildbotTarget {
+    path: "android/latest/arm64-v8a/",
+    archive_suffix: "_libretro_android",
+};
+
+const ANDROID_ARMV7: BuildbotTarget = BuildbotTarget {
+    path: "android/latest/armeabi-v7a/",
+    archive_suffix: "_libretro_android",
+};
+
+const ANDROID_X86: BuildbotTarget = BuildbotTarget {
+    path: "android/latest/x86/",
+    archive_suffix: "_libretro_android",
+};
+
+const ANDROID_X86_64: BuildbotTarget = BuildbotTarget {
+    path: "android/latest/x86_64/",
+    archive_suffix: "_libretro_android",
+};
+
+fn buildbot_target_for(os: &str, arch: &str) -> Option<BuildbotTarget> {
+    match (os, arch) {
+        ("macos", "aarch64") => Some(MACOS_ARM64),
+        ("macos", "x86_64") => Some(MACOS_GENERIC),
+        ("macos", "powerpc") => Some(MACOS_PPC),
+        ("ios", _) => Some(IOS),
+        ("linux", "aarch64") => Some(LINUX_AARCH64),
+        ("linux", "x86_64") => Some(LINUX_X86_64),
+        ("linux", "x86") => Some(LINUX_X86),
+        ("linux", "arm") => Some(LINUX_ARMHF),
+        ("windows", "x86") => Some(WINDOWS_X86),
+        ("windows", "x86_64") => Some(WINDOWS_X86_64),
+        ("android", "aarch64") => Some(ANDROID_ARM64),
+        ("android", "arm") => Some(ANDROID_ARMV7),
+        ("android", "x86") => Some(ANDROID_X86),
+        ("android", "x86_64") => Some(ANDROID_X86_64),
         _ => None,
     }
+}
+
+fn buildbot_target() -> Option<BuildbotTarget> {
+    buildbot_target_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+pub fn buildbot_base_url() -> Option<String> {
+    buildbot_target().map(BuildbotTarget::base_url)
 }
 
 pub fn http_agent() -> ureq::Agent {
@@ -385,8 +491,10 @@ pub fn download_and_install(name: &str, cores_dir: &Path, quiet: bool) -> Result
     let name = validate_core_name(name)?;
     let base = buildbot_base_url()
         .ok_or_else(|| "Auto-download not supported on this platform".to_string())?;
-    let ext = core_extension();
-    let url = format!("{}{}_libretro.{}.zip", base, name, ext);
+    let target = buildbot_target()
+        .ok_or_else(|| "Auto-download not supported on this platform".to_string())?;
+    let extension = core_extension();
+    let url = format!("{base}{}.zip", target.archive_name(&name, extension));
 
     if !quiet {
         eprintln!("Downloading {name} core...");
@@ -431,96 +539,101 @@ pub fn download_and_install(name: &str, cores_dir: &Path, quiet: bool) -> Result
         return Err("Download exceeded maximum size".to_string());
     }
 
-    let expected_name = format!("{}_libretro.{}", name, ext);
-    if data.len() as u64 > MAX_DOWNLOAD_BYTES {
-        return Err("Download exceeded maximum size".to_string());
-    }
-
-    let installed = extract_core_archive(data, cores_dir, &expected_name)?;
+    let expected_name = target.installed_name(&name, extension);
+    let installed =
+        extract_core_archive_with_extension(data, cores_dir, &expected_name, extension)?;
     if !quiet {
         eprintln!("  Installed: {}", installed.display());
     }
     Ok(installed)
 }
 
+#[cfg(test)]
 fn extract_core_archive(
     data: Vec<u8>,
     cores_dir: &Path,
     expected_name: &str,
 ) -> Result<PathBuf, String> {
+    extract_core_archive_with_extension(data, cores_dir, expected_name, core_extension())
+}
+
+fn extract_core_archive_with_extension(
+    data: Vec<u8>,
+    cores_dir: &Path,
+    expected_name: &str,
+    library_extension: &str,
+) -> Result<PathBuf, String> {
     let cursor = std::io::Cursor::new(data);
     let mut archive = zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid zip: {e}"))?;
-    let ext = core_extension();
-
-    let mut extracted_path: Option<PathBuf> = None;
-    let mut temp_files: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let extension = format!(".{library_extension}");
+    let mut candidate_index = None;
 
     for i in 0..archive.len() {
-        let mut file = archive
+        let file = archive
             .by_index(i)
             .map_err(|e| format!("Zip read error: {e}"))?;
+        if file.is_dir() {
+            continue;
+        }
 
         let name = file.name().to_string();
         let entry_path = Path::new(&name);
-
         if entry_path
             .components()
-            .any(|c| c == std::path::Component::ParentDir)
+            .any(|component| component == std::path::Component::ParentDir)
         {
             continue;
         }
 
-        let fname = entry_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or(name);
-
-        let fname_lower = fname.to_lowercase();
-
-        if !fname_lower.ends_with(&format!(".{ext}")) && !fname_lower.ends_with(".dll") {
+        let Some(fname) = entry_path.file_name() else {
+            continue;
+        };
+        let fname = fname.to_string_lossy();
+        if !fname.to_ascii_lowercase().ends_with(&extension) {
             continue;
         }
 
-        let final_path = cores_dir.join(&fname);
-        let temp_path = final_path.with_extension(format!("{ext}.tmp", ext = core_extension()));
-
-        if let Some(parent) = temp_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("Cannot create directory: {e}"))?;
+        if fname.eq_ignore_ascii_case(expected_name) {
+            candidate_index = Some(i);
+            break;
         }
-
-        let mut out =
-            fs::File::create(&temp_path).map_err(|e| format!("Cannot create temp file: {e}"))?;
-
-        let copied = io::copy(&mut file, &mut out).map_err(|e| format!("Extract failed: {e}"))?;
-
-        if copied > MAX_DOWNLOAD_BYTES {
-            let _ = fs::remove_file(&temp_path);
-            return Err("Extracted file exceeds maximum size".to_string());
-        }
-
-        if fname_lower == expected_name.to_lowercase() || fname_lower.ends_with(&format!(".{ext}"))
-        {
-            extracted_path = Some(final_path.clone());
-        }
-
-        temp_files.push((temp_path, final_path));
+        candidate_index.get_or_insert(i);
     }
 
-    if temp_files.is_empty() {
+    let Some(candidate_index) = candidate_index else {
         return Err(format!(
-            "No .{} file found in downloaded zip",
-            core_extension()
+            "No .{library_extension} file found in downloaded zip"
         ));
+    };
+
+    let mut file = archive
+        .by_index(candidate_index)
+        .map_err(|e| format!("Zip read error: {e}"))?;
+    let final_path = cores_dir.join(expected_name);
+    let temp_path = final_path.with_extension(format!("{library_extension}.tmp"));
+
+    if let Some(parent) = temp_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Cannot create directory: {e}"))?;
     }
 
-    for (temp_path, final_path) in &temp_files {
-        fs::rename(temp_path, final_path).map_err(|e| format!("Failed to install core: {e}"))?;
+    let mut out =
+        fs::File::create(&temp_path).map_err(|e| format!("Cannot create temp file: {e}"))?;
+    let copied = match io::copy(&mut file, &mut out) {
+        Ok(copied) => copied,
+        Err(error) => {
+            let _ = fs::remove_file(&temp_path);
+            return Err(format!("Extract failed: {error}"));
+        }
+    };
+    drop(out);
+
+    if copied > MAX_DOWNLOAD_BYTES {
+        let _ = fs::remove_file(&temp_path);
+        return Err("Extracted file exceeds maximum size".to_string());
     }
 
-    match extracted_path {
-        Some(p) => Ok(p),
-        None => Ok(temp_files[0].1.clone()),
-    }
+    fs::rename(&temp_path, &final_path).map_err(|e| format!("Failed to install core: {e}"))?;
+    Ok(final_path)
 }
 
 pub fn remove_core_file(name: &str, dir: &Path) -> Result<(), String> {
@@ -550,6 +663,76 @@ mod tests {
             writer.finish().unwrap();
         }
         buf.into_inner()
+    }
+
+    // ── Platform helpers ───────────────────────────────────────────────────
+
+    #[test]
+    fn buildbot_targets_match_buildbot_artifacts() {
+        for (os, arch, path, archive_name, installed_name) in [
+            (
+                "linux",
+                "arm",
+                "linux/armhf/latest/",
+                "fceumm_libretro.so",
+                "fceumm_libretro.so",
+            ),
+            (
+                "linux",
+                "x86",
+                "linux/x86/latest/",
+                "fceumm_libretro.so",
+                "fceumm_libretro.so",
+            ),
+            (
+                "macos",
+                "powerpc",
+                "apple/osx/ppc/latest/",
+                "fceumm_libretro.dylib",
+                "fceumm_libretro.dylib",
+            ),
+            (
+                "ios",
+                "aarch64",
+                "apple/ios/latest/",
+                "fceumm_libretro_ios.dylib",
+                "fceumm_libretro.dylib",
+            ),
+            (
+                "android",
+                "aarch64",
+                "android/latest/arm64-v8a/",
+                "fceumm_libretro_android.so",
+                "fceumm_libretro.so",
+            ),
+            (
+                "android",
+                "arm",
+                "android/latest/armeabi-v7a/",
+                "fceumm_libretro_android.so",
+                "fceumm_libretro.so",
+            ),
+            (
+                "android",
+                "x86",
+                "android/latest/x86/",
+                "fceumm_libretro_android.so",
+                "fceumm_libretro.so",
+            ),
+            (
+                "android",
+                "x86_64",
+                "android/latest/x86_64/",
+                "fceumm_libretro_android.so",
+                "fceumm_libretro.so",
+            ),
+        ] {
+            let target = buildbot_target_for(os, arch).expect("expected buildbot target");
+            assert_eq!(target.base_url(), format!("{BUILDBOT_BASE_URL}{path}"));
+            let extension = core_extension_for(os);
+            assert_eq!(target.archive_name("fceumm", extension), archive_name);
+            assert_eq!(target.installed_name("fceumm", extension), installed_name);
+        }
     }
 
     // ── Extension detection ────────────────────────────────────────────────
@@ -905,12 +1088,13 @@ mod tests {
     fn extract_installs_matching_extension_files_even_with_wrong_name() {
         let dir = tempfile::tempdir().unwrap();
         let ext = core_extension();
-        let expected = dir.path().join(format!("libsomething.{ext}"));
+        let expected = dir.path().join(format!("nestopia_libretro.{ext}"));
         let zip_bytes = make_zip(&[(&format!("libsomething.{ext}"), b"data")]);
 
         let path = extract_core_archive(zip_bytes, dir.path(), &format!("nestopia_libretro.{ext}"))
             .unwrap();
         assert_eq!(path, expected);
+        assert_eq!(fs::read(expected).unwrap(), b"data");
     }
 
     #[test]
@@ -918,12 +1102,43 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ext = core_extension();
         let stored_name = format!("NESTopia_Libretro.{ext}");
-        let expected = dir.path().join(&stored_name);
+        let expected = dir.path().join(format!("nestopia_libretro.{ext}"));
         let zip_bytes = make_zip(&[(&stored_name, b"core")]);
 
         let path = extract_core_archive(zip_bytes, dir.path(), &format!("nestopia_libretro.{ext}"))
             .unwrap();
         assert_eq!(path, expected);
+        assert_eq!(fs::read(expected).unwrap(), b"core");
+    }
+
+    #[test]
+    fn extract_normalizes_android_core_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_bytes = make_zip(&[("fceumm_libretro_android.so", b"core")]);
+
+        let path =
+            extract_core_archive_with_extension(zip_bytes, dir.path(), "fceumm_libretro.so", "so")
+                .unwrap();
+
+        assert_eq!(path, dir.path().join("fceumm_libretro.so"));
+        assert_eq!(fs::read(path).unwrap(), b"core");
+    }
+
+    #[test]
+    fn extract_normalizes_ios_core_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_bytes = make_zip(&[("fceumm_libretro_ios.dylib", b"core")]);
+
+        let path = extract_core_archive_with_extension(
+            zip_bytes,
+            dir.path(),
+            "fceumm_libretro.dylib",
+            "dylib",
+        )
+        .unwrap();
+
+        assert_eq!(path, dir.path().join("fceumm_libretro.dylib"));
+        assert_eq!(fs::read(path).unwrap(), b"core");
     }
 
     #[test]

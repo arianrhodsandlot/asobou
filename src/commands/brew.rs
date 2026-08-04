@@ -87,7 +87,7 @@ pub fn download(game: &str, cache_dir: &Path) -> Result<PathBuf, String> {
         ));
     }
 
-    let mut temporary = tempfile::NamedTempFile::new_in(&cache_dir)
+    let mut temporary = tempfile::NamedTempFile::new_in(cache_dir)
         .map_err(|error| format!("Could not create cache file: {error}"))?;
     let mut reader = response
         .into_body()

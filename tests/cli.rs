@@ -255,7 +255,7 @@ fn core_list_shows_header() {
     let cores = dir.path().join("asoby").join("cores");
     std::fs::create_dir_all(&cores).unwrap();
     let ext = match std::env::consts::OS {
-        "macos" => "dylib",
+        "macos" | "ios" => "dylib",
         "windows" => "dll",
         _ => "so",
     };
@@ -273,7 +273,7 @@ fn core_list_shows_arbitrary_installed_cores() {
     let cores = dir.path().join("asoby").join("cores");
     std::fs::create_dir_all(&cores).unwrap();
     let ext = match std::env::consts::OS {
-        "macos" => "dylib",
+        "macos" | "ios" => "dylib",
         "windows" => "dll",
         _ => "so",
     };

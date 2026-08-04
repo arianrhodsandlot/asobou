@@ -116,6 +116,41 @@ static SYSTEMS: LazyLock<Vec<System>> = LazyLock::new(|| {
             recommended_core: "mgba",
         },
         System {
+            extensions: &["pce"],
+            signatures: &[],
+            recommended_core: "mednafen_pce_fast",
+        },
+        System {
+            extensions: &["a78"],
+            signatures: &[],
+            recommended_core: "prosystem",
+        },
+        System {
+            extensions: &["lnx", "lyx"],
+            signatures: &[],
+            recommended_core: "handy",
+        },
+        System {
+            extensions: &["ngp", "ngc", "ngpc", "npc"],
+            signatures: &[],
+            recommended_core: "mednafen_ngp",
+        },
+        System {
+            extensions: &["ws", "wsc", "pc2", "pcv2"],
+            signatures: &[],
+            recommended_core: "mednafen_wswan",
+        },
+        System {
+            extensions: &["col", "cv"],
+            signatures: &[],
+            recommended_core: "gearcoleco",
+        },
+        System {
+            extensions: &["tic"],
+            signatures: &[],
+            recommended_core: "tic80",
+        },
+        System {
             extensions: &["a26", "bin"],
             signatures: &[],
             recommended_core: "stella",
@@ -536,6 +571,41 @@ mod tests {
         };
 
         assert_eq!(core_name, "snes9x");
+    }
+
+    #[test]
+    fn tic_extension_selects_tic80() {
+        let Detection::Detected { core_name } = detect_by_extension("tic") else {
+            panic!("expected a detected core");
+        };
+
+        assert_eq!(core_name, "tic80");
+    }
+
+    #[test]
+    fn cartridge_extensions_select_recommended_cores() {
+        for (extension, expected) in [
+            ("pce", "mednafen_pce_fast"),
+            ("a78", "prosystem"),
+            ("lnx", "handy"),
+            ("lyx", "handy"),
+            ("ngp", "mednafen_ngp"),
+            ("ngc", "mednafen_ngp"),
+            ("ngpc", "mednafen_ngp"),
+            ("npc", "mednafen_ngp"),
+            ("ws", "mednafen_wswan"),
+            ("wsc", "mednafen_wswan"),
+            ("pc2", "mednafen_wswan"),
+            ("pcv2", "mednafen_wswan"),
+            ("col", "gearcoleco"),
+            ("cv", "gearcoleco"),
+        ] {
+            let Detection::Detected { core_name } = detect_by_extension(extension) else {
+                panic!("expected a detected core for {extension}");
+            };
+
+            assert_eq!(core_name, expected);
+        }
     }
 
     #[test]

@@ -23,6 +23,7 @@ const RETRO_ENV_GET_CORE_OPTIONS_VERSION: c_uint = 52;
 const RETRO_ENV_GET_MESSAGE_INTERFACE_VERSION: c_uint = 59;
 const RETRO_ENV_SET_PERFORMANCE_LEVEL: c_uint = 8;
 const RETRO_ENV_GET_VARIABLE_UPDATE: c_uint = 17;
+const RETRO_ENV_SET_FRAME_TIME_CALLBACK: c_uint = 21;
 const RETRO_ENV_SET_GEOMETRY: c_uint = 37;
 const RETRO_ENV_GET_LANGUAGE: c_uint = 39;
 const RETRO_ENV_SET_CORE_OPTIONS_INTL: c_uint = 54;
@@ -78,6 +79,14 @@ type RetroAudioSampleFn = unsafe extern "C" fn(i16, i16);
 type RetroAudioSampleBatchFn = unsafe extern "C" fn(*const i16, usize) -> usize;
 type RetroInputPollFn = unsafe extern "C" fn();
 type RetroInputStateFn = unsafe extern "C" fn(c_uint, c_uint, c_uint, c_uint) -> i16;
+type RetroFrameTimeFn = unsafe extern "C" fn(i64);
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct RetroFrameTimeCallback {
+    callback: Option<RetroFrameTimeFn>,
+    reference: i64,
+}
 
 pub struct Core {
     _lib: Library,
@@ -135,6 +144,7 @@ static JOYPAD_BUTTONS: AtomicU16 = AtomicU16::new(0);
 static VIDEO_CAPTURE_ENABLED: AtomicBool = AtomicBool::new(true);
 static AUDIO_MUTED: AtomicBool = AtomicBool::new(false);
 static SERIALIZATION_QUIRKS: AtomicUsize = AtomicUsize::new(0);
+static FRAME_TIME_CALLBACK: Mutex<Option<RetroFrameTimeCallback>> = Mutex::new(None);
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -199,6 +209,21 @@ unsafe extern "C" fn env_callback(cmd: c_uint, data: *mut c_void) -> bool {
             true
         }
         RETRO_ENV_SET_VARIABLES => true,
+        RETRO_ENV_SET_FRAME_TIME_CALLBACK => {
+            if data.is_null() {
+                return false;
+            }
+            let callback = unsafe { *(data as *const RetroFrameTimeCallback) };
+            if callback.callback.is_none() || callback.reference <= 0 {
+                return false;
+            }
+            if let Ok(mut stored) = FRAME_TIME_CALLBACK.lock() {
+                *stored = Some(callback);
+                true
+            } else {
+                false
+            }
+        }
         RETRO_ENV_SET_CONTROLLER_INFO => true,
         RETRO_ENV_GET_LOG_INTERFACE => false,
         RETRO_ENV_SET_SERIALIZATION_QUIRKS => {
@@ -373,6 +398,9 @@ fn expand_6(value: u8) -> u8 {
 }
 
 pub unsafe fn setup_callbacks(core: &Core) {
+    if let Ok(mut callback) = FRAME_TIME_CALLBACK.lock() {
+        *callback = None;
+    }
     unsafe {
         (core.retro_set_environment)(env_callback);
         (core.retro_set_video_refresh)(video_refresh);
@@ -380,6 +408,22 @@ pub unsafe fn setup_callbacks(core: &Core) {
         (core.retro_set_audio_sample_batch)(audio_sample_batch);
         (core.retro_set_input_poll)(input_poll);
         (core.retro_set_input_state)(input_state);
+    }
+}
+
+pub unsafe fn run_frame(core: &Core) {
+    invoke_frame_time_callback();
+    unsafe { (core.retro_run)() };
+}
+
+fn invoke_frame_time_callback() {
+    let callback = FRAME_TIME_CALLBACK.lock().ok().and_then(|stored| *stored);
+    if let Some(RetroFrameTimeCallback {
+        callback: Some(callback),
+        reference,
+    }) = callback
+    {
+        unsafe { callback(reference) };
     }
 }
 
@@ -506,13 +550,45 @@ fn joypad_button_value(buttons: u16, port: u32, device: u32, index: u32, id: u32
 #[cfg(test)]
 mod tests {
     use super::{
-        FRAME, PIXEL_FORMAT, PixelFormat, convert_frame, convert_row, joypad_button_value,
-        set_video_capture_enabled, video_refresh,
+        FRAME, FRAME_TIME_CALLBACK, PIXEL_FORMAT, PixelFormat, RETRO_ENV_SET_FRAME_TIME_CALLBACK,
+        RetroFrameTimeCallback, convert_frame, convert_row, env_callback,
+        invoke_frame_time_callback, joypad_button_value, set_video_capture_enabled, video_refresh,
     };
     use crate::renderer::Frame;
     use libc::c_void;
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
+
+    static FRAME_TIME_RECEIVED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    unsafe extern "C" fn receive_frame_time(usec: i64) {
+        FRAME_TIME_RECEIVED.store(usec, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn stores_and_invokes_frame_time_callback() {
+        let callback = RetroFrameTimeCallback {
+            callback: Some(receive_frame_time),
+            reference: 16_667,
+        };
+
+        let accepted = unsafe {
+            env_callback(
+                RETRO_ENV_SET_FRAME_TIME_CALLBACK,
+                (&raw const callback).cast_mut().cast(),
+            )
+        };
+        let stored = FRAME_TIME_CALLBACK.lock().unwrap().unwrap();
+
+        assert!(accepted);
+        assert_eq!(stored.reference, 16_667);
+        assert!(stored.callback.is_some());
+
+        FRAME_TIME_RECEIVED.store(0, Ordering::Relaxed);
+        invoke_frame_time_callback();
+
+        assert_eq!(FRAME_TIME_RECEIVED.load(Ordering::Relaxed), 16_667);
+    }
 
     #[test]
     fn converts_xrgb8888_and_skips_row_padding() {

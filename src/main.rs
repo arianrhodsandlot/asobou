@@ -14,7 +14,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "asoby",
-    about = "Retro game emulator for the terminal",
+    about = "Play retro games directly in your terminal",
     version,
     disable_version_flag = true,
     disable_help_subcommand = true,

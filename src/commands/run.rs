@@ -221,7 +221,7 @@ fn drain_pending_terminal_events() {
 fn rewind_run_frame(core: &crate::emulation::libretro::Core, frame_mailbox: &LatestFrameMailbox) {
     crate::emulation::libretro::set_video_capture_enabled(true);
     unsafe {
-        (core.retro_run)();
+        crate::emulation::libretro::run_frame(core);
     }
     let frame = crate::emulation::libretro::FRAME
         .lock()
@@ -574,7 +574,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             if !rewound {
                 let capture_frame = Instant::now() >= next_render && frame_mailbox.wants_frame();
                 crate::emulation::libretro::set_video_capture_enabled(capture_frame);
-                (core.retro_run)();
+                crate::emulation::libretro::run_frame(&core);
                 frame_count += 1;
                 if let Some(rewind) = rewind.as_mut() {
                     rewind.capture(&core, frame_count);

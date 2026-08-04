@@ -36,30 +36,9 @@ fn write_state(data_home: &Path, core: &str, game: &str, name: &str) -> std::pat
     let dir = data_home.join("asoby").join("states").join(core).join(game);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(name);
-    let stem = name.strip_suffix(".state").unwrap();
-    let timestamp = &stem[stem.len() - 24..];
-    std::fs::write(&path, container(core, game, timestamp, &[1, 2, 3, 4])).unwrap();
+    // `state list` only inspects filenames, so the contents can be anything.
+    std::fs::write(&path, b"not a real state").unwrap();
     path
-}
-
-fn container(core: &str, game: &str, timestamp: &str, payload: &[u8]) -> Vec<u8> {
-    use std::io::Write;
-
-    let dt = chrono::DateTime::parse_from_str(timestamp, "%Y%m%dT%H%M%S%.3f%z").unwrap();
-    let mut out = Vec::new();
-    out.extend_from_slice(b"ASOBYST");
-    out.push(1);
-    for text in [core, game] {
-        out.extend_from_slice(&(text.len() as u32).to_le_bytes());
-        out.extend_from_slice(text.as_bytes());
-    }
-    out.extend_from_slice(&dt.timestamp_millis().to_le_bytes());
-    out.extend_from_slice(&(dt.offset().local_minus_utc() / 60).to_le_bytes());
-    out.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-    encoder.write_all(payload).unwrap();
-    out.extend_from_slice(&encoder.finish().unwrap());
-    out
 }
 
 #[test]
@@ -363,8 +342,6 @@ fn state_list_skips_temp_files_and_reports_malformed_names() {
     std::fs::create_dir_all(&game_dir).unwrap();
     std::fs::write(game_dir.join(".asoby-state-abc"), b"x").unwrap();
     std::fs::write(game_dir.join("garbage.bin"), b"x").unwrap();
-    let corrupt = game_dir.join("game.nes.20260802T160000.000+0800.state");
-    std::fs::write(&corrupt, b"not a state").unwrap();
     write_state(
         dir.path(),
         "fceumm",
@@ -378,10 +355,8 @@ fn state_list_skips_temp_files_and_reports_malformed_names() {
     assert!(stdout.contains("game.nes"));
     assert!(!stdout.contains(".asoby-state-abc"));
     assert!(!stdout.contains("garbage.bin"));
-    assert!(!stdout.contains("20260802T160000.000+0800"));
     assert!(stderr.contains("malformed"));
     assert!(stderr.contains("garbage.bin"));
-    assert!(stderr.contains("20260802T160000.000+0800"));
 }
 
 #[test]

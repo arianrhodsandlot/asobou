@@ -395,16 +395,14 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
                 (core.retro_deinit)();
                 std::process::exit(1);
             }
-            if let Err(error) = crate::emulation::state::load_from_path(
-                &core, startup, &core_name, &game_name, state_size,
-            ) {
+            if let Err(error) = crate::emulation::state::load_from_path(&core, startup) {
                 eprintln!("Error: failed to load state {}: {error}", startup.display());
                 (core.retro_unload_game)();
                 (core.retro_deinit)();
                 std::process::exit(1);
             }
         } else if resume && serialization_supported {
-            let _ = crate::emulation::state::load_newest(&core, &core_name, &game_name, state_size);
+            let _ = crate::emulation::state::load_newest(&core, &core_name, &game_name);
         }
 
         let mut av_info: crate::emulation::libretro::RetroSystemAvInfo = mem::zeroed();
@@ -541,9 +539,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 if input.take_load() {
-                    match crate::emulation::state::load_newest(
-                        &core, &core_name, &game_name, state_size,
-                    ) {
+                    match crate::emulation::state::load_newest(&core, &core_name, &game_name) {
                         Ok(Some(_)) => set_message("State loaded"),
                         Ok(None) => set_message("No save state found"),
                         Err(error) => set_message(&format!("Load failed: {error}")),

@@ -1,18 +1,23 @@
 use flate2::Compression;
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
+use flate2::{Decompress, FlushDecompress, Status};
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-const MAGIC: &[u8] = b"ASOBYST";
-const FORMAT_VERSION: u8 = 1;
+const RASTATE_VERSION: u8 = 1;
 const TIMESTAMP_LEN: usize = 24;
-const HEADER_FIXED: usize = MAGIC.len() + 1 + 4 + 4 + 8 + 4 + 8;
 const TEMP_PREFIX: &str = ".asoby-state-";
-const CAPACITY_HINT_CAP: usize = 1 << 26;
 const MAX_STATE_FILE_SIZE: usize = 256 * 1024 * 1024;
+const RZIP_HEADER_SIZE: usize = 20;
+const RZIP_DEFAULT_CHUNK_SIZE: usize = 128 * 1024;
+const RZIP_MAGIC: &[u8; 8] = b"#RZIPv\x01#";
+const RZIP_MAX_CHUNK_SIZE: usize = 64 * 1024 * 1024;
+// An RZIP payload is a RASTATE1 container, which adds at most 31 bytes
+// over the core state: 8 identifier, 8 MEM header, 7 padding, 8 END.
+const MAX_RZIP_CONTENT: usize = MAX_STATE_FILE_SIZE + 32;
 
 pub trait StateBackend {
     fn serialize(&self, data: &mut [u8]) -> bool;
@@ -48,17 +53,6 @@ impl Timestamp {
     fn unix_millis(&self) -> i64 {
         self.0.timestamp_millis()
     }
-
-    fn offset_minutes(&self) -> i32 {
-        self.0.offset().local_minus_utc() / 60
-    }
-
-    fn from_millis_offset(millis: i64, offset_minutes: i32) -> Option<Self> {
-        let seconds = i64::from(offset_minutes).checked_mul(60)?;
-        let offset = chrono::FixedOffset::east_opt(i32::try_from(seconds).ok()?)?;
-        let datetime = chrono::DateTime::from_timestamp_millis(millis)?.with_timezone(&offset);
-        Some(Self(datetime))
-    }
 }
 
 impl fmt::Display for Timestamp {
@@ -77,28 +71,10 @@ pub enum StateError {
     NotAState,
     UnsupportedVersion(u8),
     Truncated,
-    CoreMismatch {
-        expected: String,
-        found: String,
-    },
-    RomMismatch {
-        expected: String,
-        found: String,
-    },
-    SizeMismatch {
-        expected: usize,
-        found: usize,
-    },
     TooLarge {
         size: usize,
         max: usize,
     },
-    InvalidTimestamp,
-    TimestampMismatch {
-        filename: Timestamp,
-        recorded: Timestamp,
-    },
-    Decompression(io::Error),
     SerializationFailed,
     UnserializationFailed,
 }
@@ -114,33 +90,13 @@ impl fmt::Display for StateError {
                     path.display()
                 )
             }
-            Self::NotAState => write!(formatter, "not an Asoby state file"),
+            Self::NotAState => write!(formatter, "not a valid state file"),
             Self::UnsupportedVersion(version) => {
                 write!(formatter, "unsupported state format version {version}")
             }
             Self::Truncated => write!(formatter, "truncated state file"),
-            Self::CoreMismatch { expected, found } => write!(
-                formatter,
-                "state was saved by core \"{found}\", expected \"{expected}\""
-            ),
-            Self::RomMismatch { expected, found } => write!(
-                formatter,
-                "state was saved for ROM \"{found}\", expected \"{expected}\""
-            ),
-            Self::SizeMismatch { expected, found } => write!(
-                formatter,
-                "state size mismatch: file holds {found} bytes, expected {expected}"
-            ),
             Self::TooLarge { size, max } => {
                 write!(formatter, "state is {size} bytes, maximum is {max} bytes")
-            }
-            Self::InvalidTimestamp => write!(formatter, "invalid timestamp in state file"),
-            Self::TimestampMismatch { filename, recorded } => write!(
-                formatter,
-                "filename timestamp {filename} does not match the recorded timestamp {recorded}"
-            ),
-            Self::Decompression(source) => {
-                write!(formatter, "failed to decompress state: {source}")
             }
             Self::SerializationFailed => {
                 write!(formatter, "core failed to serialize its state")
@@ -161,9 +117,7 @@ impl From<io::Error> for StateError {
 impl std::error::Error for StateError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Io(source) | Self::Decompression(source) | Self::ReadDir { source, .. } => {
-                Some(source)
-            }
+            Self::Io(source) | Self::ReadDir { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -221,13 +175,14 @@ fn save_state_in(
     if !backend.serialize(&mut scratch) {
         return Err(StateError::SerializationFailed);
     }
-    let container = encode(core, game, timestamp, &scratch)?;
+    let container = encode(&scratch)?;
+    let file_bytes = rzip_wrap(&container);
     let dir = root.join(core).join(game);
     fs::create_dir_all(&dir)?;
     let mut temp = tempfile::Builder::new()
         .prefix(TEMP_PREFIX)
         .tempfile_in(&dir)?;
-    temp.write_all(&container)?;
+    temp.write_all(&file_bytes)?;
     temp.flush()?;
     let base = format!("{game}.{}", timestamp.filename());
     let mut counter = 1u32;
@@ -249,30 +204,23 @@ fn save_state_in(
     }
 }
 
-fn read_state_file(path: &Path, cap: Option<usize>) -> Result<Vec<u8>, StateError> {
+fn read_state_file(path: &Path) -> Result<Vec<u8>, StateError> {
     let len = fs::metadata(path).map_err(StateError::Io)?.len();
-    if let Some(cap) = cap
-        && len > cap as u64
-    {
+    if len > MAX_STATE_FILE_SIZE as u64 {
         return Err(StateError::TooLarge {
             size: usize::try_from(len).unwrap_or(usize::MAX),
-            max: cap,
+            max: MAX_STATE_FILE_SIZE,
         });
     }
     fs::read(path).map_err(StateError::Io)
-}
-
-fn load_file_cap(state_size: usize) -> usize {
-    state_size.saturating_mul(2).saturating_add(1 << 16)
 }
 
 pub fn load_newest(
     backend: &dyn StateBackend,
     core: &str,
     game: &str,
-    state_size: usize,
 ) -> Result<Option<PathBuf>, StateError> {
-    load_newest_in(&states_dir(), backend, core, game, state_size)
+    load_newest_in(&states_dir(), backend, core, game)
 }
 
 fn load_newest_in(
@@ -280,38 +228,28 @@ fn load_newest_in(
     backend: &dyn StateBackend,
     core: &str,
     game: &str,
-    state_size: usize,
 ) -> Result<Option<PathBuf>, StateError> {
     let mut candidates = scan_candidates(root, core, game)?;
     candidates.sort_by_key(|candidate| std::cmp::Reverse((candidate.millis, candidate.counter)));
-    let cap = load_file_cap(state_size);
     let mut first_invalid = None;
     for candidate in candidates {
-        let bytes = match read_state_file(&candidate.path, Some(cap)) {
+        let bytes = match read_state_file(&candidate.path) {
             Ok(bytes) => bytes,
             Err(error) => {
                 first_invalid.get_or_insert(error);
                 continue;
             }
         };
-        let (payload, recorded) = match decode(&bytes, core, game, Some(state_size)) {
-            Ok(decoded) => decoded,
+        match load_state_bytes(backend, &bytes) {
+            Ok(()) => return Ok(Some(candidate.path)),
+            Err(StateError::UnserializationFailed) => {
+                return Err(StateError::UnserializationFailed);
+            }
             Err(error) => {
                 first_invalid.get_or_insert(error);
                 continue;
             }
-        };
-        if !timestamps_match(candidate.timestamp, recorded) {
-            first_invalid.get_or_insert(StateError::TimestampMismatch {
-                filename: candidate.timestamp,
-                recorded,
-            });
-            continue;
         }
-        if !backend.unserialize(&payload) {
-            return Err(StateError::UnserializationFailed);
-        }
-        return Ok(Some(candidate.path));
     }
     match first_invalid {
         Some(error) => Err(error),
@@ -319,31 +257,29 @@ fn load_newest_in(
     }
 }
 
-pub fn load_from_path(
-    backend: &dyn StateBackend,
-    path: &Path,
-    core: &str,
-    game: &str,
-    state_size: usize,
-) -> Result<(), StateError> {
-    let bytes = read_state_file(path, Some(load_file_cap(state_size)))?;
-    let (payload, _timestamp) = decode(&bytes, core, game, Some(state_size))?;
-    if !backend.unserialize(&payload) {
+pub fn load_from_path(backend: &dyn StateBackend, path: &Path) -> Result<(), StateError> {
+    let bytes = read_state_file(path)?;
+    load_state_bytes(backend, &bytes)
+}
+
+fn load_state_bytes(backend: &dyn StateBackend, bytes: &[u8]) -> Result<(), StateError> {
+    let plain;
+    let payload = if is_rzip(bytes) {
+        plain = rzip_unwrap(bytes)?;
+        parse_state(&plain)?
+    } else {
+        parse_state(bytes)?
+    };
+    if !backend.unserialize(payload) {
         return Err(StateError::UnserializationFailed);
     }
     Ok(())
-}
-
-fn timestamps_match(filename: Timestamp, recorded: Timestamp) -> bool {
-    filename.unix_millis() == recorded.unix_millis()
-        && filename.offset_minutes() == recorded.offset_minutes()
 }
 
 struct Candidate {
     millis: i64,
     counter: u32,
     path: PathBuf,
-    timestamp: Timestamp,
 }
 
 fn scan_candidates(root: &Path, core: &str, game: &str) -> Result<Vec<Candidate>, StateError> {
@@ -373,7 +309,6 @@ fn scan_candidates(root: &Path, core: &str, game: &str) -> Result<Vec<Candidate>
             millis: timestamp.unix_millis(),
             counter,
             path: entry.path(),
-            timestamp,
         });
     }
     Ok(candidates)
@@ -492,8 +427,7 @@ fn list_states_in(root: &Path) -> Result<StateList, StateError> {
                 if name.starts_with('.') {
                     continue;
                 }
-                let Some((name_game, filename_timestamp, counter)) = parse_state_file_name(&name)
-                else {
+                let Some((name_game, timestamp, counter)) = parse_state_file_name(&name) else {
                     list.malformed.push(MalformedState {
                         path,
                         reason: "name does not match the state naming scheme".into(),
@@ -509,40 +443,13 @@ fn list_states_in(root: &Path) -> Result<StateList, StateError> {
                     });
                     continue;
                 }
-                let bytes = match read_state_file(&path, Some(MAX_STATE_FILE_SIZE)) {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        list.malformed.push(MalformedState {
-                            path,
-                            reason: error.to_string(),
-                        });
-                        continue;
-                    }
-                };
-                match decode(&bytes, &core, &game, None) {
-                    Ok((_payload, recorded)) => {
-                        if !timestamps_match(filename_timestamp, recorded) {
-                            list.malformed.push(MalformedState {
-                                path,
-                                reason: format!(
-                                    "filename timestamp {filename_timestamp} does not match the recorded timestamp {recorded}"
-                                ),
-                            });
-                            continue;
-                        }
-                        list.entries.push(StateEntry {
-                            core: core.clone(),
-                            game: game.clone(),
-                            timestamp: recorded,
-                            path,
-                            counter,
-                        });
-                    }
-                    Err(error) => list.malformed.push(MalformedState {
-                        path,
-                        reason: error.to_string(),
-                    }),
-                }
+                list.entries.push(StateEntry {
+                    core: core.clone(),
+                    game: game.clone(),
+                    timestamp,
+                    path,
+                    counter,
+                });
             }
         }
     }
@@ -592,127 +499,152 @@ fn split_counter(text: &str) -> Option<(&str, u32)> {
     Some((base, digits.parse().ok()?))
 }
 
-fn encode(
-    core: &str,
-    game: &str,
-    timestamp: Timestamp,
-    payload: &[u8],
-) -> Result<Vec<u8>, StateError> {
-    let mut out = Vec::with_capacity(HEADER_FIXED + core.len() + game.len() + payload.len());
-    out.extend_from_slice(MAGIC);
-    out.push(FORMAT_VERSION);
-    write_string(&mut out, core)?;
-    write_string(&mut out, game)?;
-    out.extend_from_slice(&timestamp.unix_millis().to_le_bytes());
-    out.extend_from_slice(&timestamp.offset_minutes().to_le_bytes());
-    out.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(payload)?;
-    out.extend_from_slice(&encoder.finish()?);
+fn is_rzip(bytes: &[u8]) -> bool {
+    bytes.len() >= 8 && &bytes[..8] == RZIP_MAGIC
+}
+
+fn rzip_wrap(plain: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(RZIP_HEADER_SIZE + plain.len() / 2);
+    out.extend_from_slice(RZIP_MAGIC);
+    out.extend_from_slice(&(RZIP_DEFAULT_CHUNK_SIZE as u32).to_le_bytes());
+    out.extend_from_slice(&(plain.len() as u64).to_le_bytes());
+    for chunk in plain.chunks(RZIP_DEFAULT_CHUNK_SIZE) {
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(chunk).unwrap();
+        let compressed = encoder.finish().unwrap();
+        out.extend_from_slice(&(compressed.len() as u32).to_le_bytes());
+        out.extend_from_slice(&compressed);
+    }
+    out
+}
+
+fn rzip_unwrap(bytes: &[u8]) -> Result<Vec<u8>, StateError> {
+    if bytes.len() < RZIP_HEADER_SIZE {
+        return Err(StateError::Truncated);
+    }
+    let chunk_size = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let total = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
+    if chunk_size == 0 || chunk_size > RZIP_MAX_CHUNK_SIZE {
+        return Err(StateError::Truncated);
+    }
+    if total == 0 {
+        return Err(StateError::Truncated);
+    }
+    if total > MAX_RZIP_CONTENT as u64 {
+        return Err(StateError::TooLarge {
+            size: usize::try_from(total).unwrap_or(usize::MAX),
+            max: MAX_RZIP_CONTENT,
+        });
+    }
+    let total = total as usize;
+    let mut out = Vec::with_capacity(total);
+    let mut pos = RZIP_HEADER_SIZE;
+    while out.len() < total {
+        if pos + 4 > bytes.len() {
+            return Err(StateError::Truncated);
+        }
+        let compressed_len = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4;
+        if compressed_len == 0 || compressed_len > chunk_size * 2 {
+            return Err(StateError::Truncated);
+        }
+        if pos + compressed_len > bytes.len() {
+            return Err(StateError::Truncated);
+        }
+        let expected = (total - out.len()).min(chunk_size);
+        let decoded = inflate_chunk(&bytes[pos..pos + compressed_len], expected)?;
+        if decoded.len() != expected {
+            return Err(StateError::Truncated);
+        }
+        pos += compressed_len;
+        out.extend_from_slice(&decoded);
+    }
     Ok(out)
 }
 
-fn decode(
-    bytes: &[u8],
-    expected_core: &str,
-    expected_game: &str,
-    expected_size: Option<usize>,
-) -> Result<(Vec<u8>, Timestamp), StateError> {
-    if bytes.len() < MAGIC.len() + 1 {
+fn inflate_chunk(chunk: &[u8], expected: usize) -> Result<Vec<u8>, StateError> {
+    let mut decoder = Decompress::new(true);
+    let mut out = Vec::with_capacity(expected);
+    let mut in_pos = 0usize;
+    let mut buf = [0u8; 8192];
+    loop {
+        // miniz_oxide cannot resume a Finish call that did not complete,
+        // so flush with None until the input is exhausted, then Finish.
+        let flush = if in_pos == chunk.len() {
+            FlushDecompress::Finish
+        } else {
+            FlushDecompress::None
+        };
+        let before_in = decoder.total_in();
+        let before_out = decoder.total_out();
+        let status = decoder
+            .decompress(&chunk[in_pos..], &mut buf, flush)
+            .map_err(|_| StateError::Truncated)?;
+        let consumed = (decoder.total_in() - before_in) as usize;
+        let produced = (decoder.total_out() - before_out) as usize;
+        in_pos += consumed;
+        out.extend_from_slice(&buf[..produced]);
+        if out.len() > expected {
+            return Err(StateError::Truncated);
+        }
+        match status {
+            Status::StreamEnd => break,
+            // BufError means the output buffer filled before the stream
+            // ended; keep going as long as each call makes progress.
+            Status::Ok | Status::BufError if consumed > 0 || produced > 0 => {}
+            Status::Ok | Status::BufError => return Err(StateError::Truncated),
+        }
+    }
+    if in_pos != chunk.len() {
         return Err(StateError::Truncated);
     }
-    if &bytes[..MAGIC.len()] != MAGIC {
+    Ok(out)
+}
+
+fn encode(payload: &[u8]) -> Result<Vec<u8>, StateError> {
+    let len =
+        u32::try_from(payload.len()).map_err(|_| StateError::TooLarge {
+            size: payload.len(),
+            max: u32::MAX as usize,
+        })?;
+    let mut out = Vec::with_capacity(8 + 8 + payload.len().next_multiple_of(8) + 8);
+    out.extend_from_slice(b"RASTATE");
+    out.push(RASTATE_VERSION);
+    out.extend_from_slice(b"MEM ");
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(payload);
+    out.resize(out.len().next_multiple_of(8), 0);
+    out.extend_from_slice(b"END ");
+    out.extend_from_slice(&0u32.to_le_bytes());
+    Ok(out)
+}
+
+fn parse_state(bytes: &[u8]) -> Result<&[u8], StateError> {
+    if bytes.len() < 8 || &bytes[..7] != b"RASTATE" {
         return Err(StateError::NotAState);
     }
-    let version = bytes[MAGIC.len()];
-    if version != FORMAT_VERSION {
-        return Err(StateError::UnsupportedVersion(version));
+    if bytes[7] != RASTATE_VERSION {
+        return Err(StateError::UnsupportedVersion(bytes[7]));
     }
-    let mut pos = MAGIC.len() + 1;
-    let core = read_string(bytes, &mut pos)?;
-    let game = read_string(bytes, &mut pos)?;
-    if pos + 8 + 4 + 8 > bytes.len() {
-        return Err(StateError::Truncated);
+    let mut pos = 8usize;
+    let mut payload = None;
+    while pos + 8 <= bytes.len() {
+        let marker = &bytes[pos..pos + 4];
+        let block_len = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        pos += 8;
+        if marker == b"END " {
+            break;
+        }
+        let remaining = bytes.len() - pos;
+        if block_len > remaining {
+            return Err(StateError::Truncated);
+        }
+        if marker == b"MEM " {
+            payload = Some(&bytes[pos..pos + block_len]);
+        }
+        pos += block_len.next_multiple_of(8).min(remaining);
     }
-    let millis = i64::from_le_bytes(bytes[pos..pos + 8].try_into().unwrap());
-    let offset = i32::from_le_bytes(bytes[pos + 8..pos + 12].try_into().unwrap());
-    let size = u64::from_le_bytes(bytes[pos + 12..pos + 20].try_into().unwrap());
-    pos += 20;
-    let timestamp =
-        Timestamp::from_millis_offset(millis, offset).ok_or(StateError::InvalidTimestamp)?;
-    if core != expected_core {
-        return Err(StateError::CoreMismatch {
-            expected: expected_core.into(),
-            found: core,
-        });
-    }
-    if game != expected_game {
-        return Err(StateError::RomMismatch {
-            expected: expected_game.into(),
-            found: game,
-        });
-    }
-    if let Some(expected) = expected_size
-        && size != expected as u64
-    {
-        return Err(StateError::SizeMismatch {
-            expected,
-            found: size as usize,
-        });
-    }
-    let declared = usize::try_from(size).map_err(|_| StateError::Truncated)?;
-    if expected_size.is_none() && declared > MAX_STATE_FILE_SIZE {
-        return Err(StateError::TooLarge {
-            size: declared,
-            max: MAX_STATE_FILE_SIZE,
-        });
-    }
-    let payload = &bytes[pos..];
-    let mut decoder = ZlibDecoder::new(payload);
-    let mut output = Vec::with_capacity(declared.min(CAPACITY_HINT_CAP));
-    let limit = declared.saturating_add(1) as u64;
-    let read = decoder
-        .by_ref()
-        .take(limit)
-        .read_to_end(&mut output)
-        .map_err(StateError::Decompression)?;
-    if read != declared {
-        return Err(StateError::SizeMismatch {
-            expected: declared,
-            found: read,
-        });
-    }
-    if decoder.total_in() != payload.len() as u64 {
-        return Err(StateError::Decompression(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "trailing data after compressed payload",
-        )));
-    }
-    Ok((output, timestamp))
-}
-
-fn read_string(bytes: &[u8], pos: &mut usize) -> Result<String, StateError> {
-    if *pos + 4 > bytes.len() {
-        return Err(StateError::Truncated);
-    }
-    let len = u32::from_le_bytes(bytes[*pos..*pos + 4].try_into().unwrap()) as usize;
-    *pos += 4;
-    let end = pos.checked_add(len).ok_or(StateError::Truncated)?;
-    if end > bytes.len() {
-        return Err(StateError::Truncated);
-    }
-    let text = std::str::from_utf8(&bytes[*pos..end])
-        .map_err(|_| StateError::Truncated)?
-        .to_string();
-    *pos = end;
-    Ok(text)
-}
-
-fn write_string(out: &mut Vec<u8>, text: &str) -> Result<(), StateError> {
-    let len = u32::try_from(text.len()).map_err(|_| StateError::Truncated)?;
-    out.extend_from_slice(&len.to_le_bytes());
-    out.extend_from_slice(text.as_bytes());
-    Ok(())
+    payload.ok_or(StateError::NotAState)
 }
 
 pub(crate) fn compress(data: &[u8]) -> Vec<u8> {
@@ -794,7 +726,7 @@ mod tests {
         );
 
         backend.state.set(7);
-        load_from_path(&backend, &path, "fceumm", "game.nes", 8).unwrap();
+        load_from_path(&backend, &path).unwrap();
 
         assert_eq!(backend.state.get(), 42);
     }
@@ -823,7 +755,7 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.exists());
         assert!(second.exists());
-        let loaded = load_newest_in(dir.path(), &backend, "fceumm", "game.nes", 8)
+        let loaded = load_newest_in(dir.path(), &backend, "fceumm", "game.nes")
             .unwrap()
             .unwrap();
         assert_eq!(loaded, second);
@@ -920,7 +852,7 @@ mod tests {
             ts("20261101T010000.000-0800"),
         );
 
-        let loaded = load_newest_in(dir.path(), &backend, "fceumm", "game.nes", 8)
+        let loaded = load_newest_in(dir.path(), &backend, "fceumm", "game.nes")
             .unwrap()
             .unwrap();
         assert_eq!(loaded, later);
@@ -961,7 +893,7 @@ mod tests {
             .set_modified(base)
             .unwrap();
 
-        let loaded = load_newest_in(dir.path(), &backend, "fceumm", "game.nes", 8)
+        let loaded = load_newest_in(dir.path(), &backend, "fceumm", "game.nes")
             .unwrap()
             .unwrap();
         assert_eq!(loaded, newer);
@@ -989,7 +921,40 @@ mod tests {
         );
         fs::write(&newest, b"corrupt contents").unwrap();
 
-        let loaded = load_newest_in(dir.path(), &backend, "fceumm", "game.nes", 8)
+        let loaded = load_newest_in(dir.path(), &backend, "fceumm", "game.nes")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(loaded, older);
+        assert_eq!(backend.state.get(), 1);
+    }
+
+    #[test]
+    fn load_newest_skips_rastate_files_without_a_mem_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = FakeBackend {
+            state: Cell::new(1),
+        };
+        let older = save_at(
+            dir.path(),
+            "fceumm",
+            "game.nes",
+            &backend,
+            ts("20260802T151205.903+0800"),
+        );
+        let game_dir = dir.path().join("fceumm").join("game.nes");
+        let mut headerless = Vec::new();
+        headerless.extend_from_slice(b"RASTATE");
+        headerless.push(1);
+        headerless.extend_from_slice(b"END ");
+        headerless.extend_from_slice(&0u32.to_le_bytes());
+        fs::write(
+            game_dir.join("game.nes.20260802T154831.027+0800.state"),
+            headerless,
+        )
+        .unwrap();
+
+        let loaded = load_newest_in(dir.path(), &backend, "fceumm", "game.nes")
             .unwrap()
             .unwrap();
 
@@ -1013,16 +978,9 @@ mod tests {
         // A newer file with a valid container whose payload the core rejects.
         let game_dir = dir.path().join("fceumm").join("game.nes");
         let rejected = game_dir.join("game.nes.20260802T154831.027+0800.state");
-        let container = encode(
-            "fceumm",
-            "game.nes",
-            ts("20260802T154831.027+0800"),
-            &[0xff; 8],
-        )
-        .unwrap();
-        fs::write(&rejected, container).unwrap();
+        fs::write(&rejected, encode(&[0xff; 8]).unwrap()).unwrap();
 
-        let error = load_newest_in(dir.path(), &backend, "fceumm", "game.nes", 8).unwrap_err();
+        let error = load_newest_in(dir.path(), &backend, "fceumm", "game.nes").unwrap_err();
 
         assert!(matches!(error, StateError::UnserializationFailed));
         assert_eq!(backend.state.get(), 1);
@@ -1043,7 +1001,7 @@ mod tests {
         );
         fs::write(&path, b"corrupt contents").unwrap();
 
-        let error = load_newest_in(dir.path(), &backend, "fceumm", "game.nes", 8).unwrap_err();
+        let error = load_newest_in(dir.path(), &backend, "fceumm", "game.nes").unwrap_err();
 
         assert!(matches!(error, StateError::NotAState));
     }
@@ -1056,7 +1014,7 @@ mod tests {
         };
 
         assert!(
-            load_newest_in(dir.path(), &backend, "fceumm", "game.nes", 8)
+            load_newest_in(dir.path(), &backend, "fceumm", "game.nes")
                 .unwrap()
                 .is_none()
         );
@@ -1105,7 +1063,7 @@ mod tests {
 
         let list = list_states_in(dir.path()).unwrap();
         assert_eq!(list.entries[0].game, game);
-        let loaded = load_newest_in(dir.path(), &backend, "fceumm", game, 8)
+        let loaded = load_newest_in(dir.path(), &backend, "fceumm", game)
             .unwrap()
             .unwrap();
         assert_eq!(loaded, path);
@@ -1146,216 +1104,23 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejects_corrupt_containers() {
-        let dir = tempfile::tempdir().unwrap();
-        let backend = FakeBackend {
-            state: Cell::new(1),
-        };
-        let path = save_at(
-            dir.path(),
-            "fceumm",
-            "game.nes",
-            &backend,
-            ts("20260802T151205.903+0800"),
-        );
-        let bytes = fs::read(&path).unwrap();
-        let header_len = HEADER_FIXED + "fceumm".len() + "game.nes".len();
+    fn saved_container_matches_the_retroarch_layout() {
+        let container = encode(&[1, 2, 3, 4, 5]).unwrap();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"RASTATE");
+        expected.push(1);
+        expected.extend_from_slice(b"MEM ");
+        expected.extend_from_slice(&5u32.to_le_bytes());
+        expected.extend_from_slice(&[1, 2, 3, 4, 5]);
+        expected.extend_from_slice(&[0, 0, 0]);
+        expected.extend_from_slice(b"END ");
+        expected.extend_from_slice(&0u32.to_le_bytes());
 
-        let mut bad_magic = bytes.clone();
-        bad_magic[0] = b'X';
-        assert!(matches!(
-            decode(&bad_magic, "fceumm", "game.nes", Some(8)),
-            Err(StateError::NotAState)
-        ));
-
-        let mut bad_version = bytes.clone();
-        bad_version[MAGIC.len()] = 99;
-        assert!(matches!(
-            decode(&bad_version, "fceumm", "game.nes", Some(8)),
-            Err(StateError::UnsupportedVersion(99))
-        ));
-
-        assert!(matches!(
-            decode(&bytes[..12], "fceumm", "game.nes", Some(8)),
-            Err(StateError::Truncated)
-        ));
-        assert!(matches!(
-            decode(&bytes[..header_len + 5], "fceumm", "game.nes", Some(8)),
-            Err(StateError::Decompression(_) | StateError::SizeMismatch { .. })
-        ));
-
-        assert!(matches!(
-            decode(&bytes, "nestopia", "game.nes", Some(8)),
-            Err(StateError::CoreMismatch { .. })
-        ));
-        assert!(matches!(
-            decode(&bytes, "fceumm", "other.nes", Some(8)),
-            Err(StateError::RomMismatch { .. })
-        ));
-        assert!(matches!(
-            decode(&bytes, "fceumm", "game.nes", Some(16)),
-            Err(StateError::SizeMismatch { .. })
-        ));
-
-        let mut garbage_payload = bytes[..header_len].to_vec();
-        garbage_payload.extend_from_slice(b"this is not zlib data");
-        assert!(matches!(
-            decode(&garbage_payload, "fceumm", "game.nes", Some(8)),
-            Err(StateError::Decompression(_))
-        ));
+        assert_eq!(container, expected);
     }
 
     #[test]
-    fn decode_rejects_payloads_larger_than_the_declared_size() {
-        let dir = tempfile::tempdir().unwrap();
-        let backend = FakeBackend {
-            state: Cell::new(1),
-        };
-        let path = save_at(
-            dir.path(),
-            "fceumm",
-            "game.nes",
-            &backend,
-            ts("20260802T151205.903+0800"),
-        );
-        let bytes = fs::read(&path).unwrap();
-        let header_len = HEADER_FIXED + "fceumm".len() + "game.nes".len();
-        // Header declares 8 bytes but the payload expands to 16.
-        let mut oversized = bytes[..header_len].to_vec();
-        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(&[0xaa; 16]).unwrap();
-        oversized.extend_from_slice(&encoder.finish().unwrap());
-
-        assert!(matches!(
-            decode(&oversized, "fceumm", "game.nes", Some(8)),
-            Err(StateError::SizeMismatch { .. })
-        ));
-        assert!(matches!(
-            decode(&oversized, "fceumm", "game.nes", None),
-            Err(StateError::SizeMismatch { .. })
-        ));
-    }
-
-    #[test]
-    fn decode_rejects_invalid_embedded_timestamps() {
-        let dir = tempfile::tempdir().unwrap();
-        let backend = FakeBackend {
-            state: Cell::new(1),
-        };
-        let path = save_at(
-            dir.path(),
-            "fceumm",
-            "game.nes",
-            &backend,
-            ts("20260802T151205.903+0800"),
-        );
-        let mut bytes = fs::read(&path).unwrap();
-        // The offset sits 8 + 4+6 + 4+8 bytes after the magic, followed by
-        // the 8-byte millis field: patch the 4-byte offset with a value
-        // beyond the valid +/-24h range.
-        let offset_pos = 8 + 4 + "fceumm".len() + 4 + "game.nes".len() + 8;
-        bytes[offset_pos..offset_pos + 4].copy_from_slice(&9_999_999i32.to_le_bytes());
-
-        assert!(matches!(
-            decode(&bytes, "fceumm", "game.nes", Some(8)),
-            Err(StateError::InvalidTimestamp)
-        ));
-    }
-
-    #[test]
-    fn decode_rejects_oversized_declared_sizes_when_listing() {
-        let dir = tempfile::tempdir().unwrap();
-        let backend = FakeBackend {
-            state: Cell::new(1),
-        };
-        let path = save_at(
-            dir.path(),
-            "fceumm",
-            "game.nes",
-            &backend,
-            ts("20260802T151205.903+0800"),
-        );
-        let mut bytes = fs::read(&path).unwrap();
-        let size_pos = 8 + 4 + "fceumm".len() + 4 + "game.nes".len() + 8 + 4;
-        bytes[size_pos..size_pos + 8]
-            .copy_from_slice(&(MAX_STATE_FILE_SIZE as u64 + 1).to_le_bytes());
-
-        assert!(matches!(
-            decode(&bytes, "fceumm", "game.nes", None),
-            Err(StateError::TooLarge { .. })
-        ));
-        assert!(matches!(
-            decode(&bytes, "fceumm", "game.nes", Some(8)),
-            Err(StateError::SizeMismatch { .. })
-        ));
-    }
-
-    #[test]
-    fn list_states_reports_timestamp_mismatches() {
-        let dir = tempfile::tempdir().unwrap();
-        let backend = FakeBackend {
-            state: Cell::new(1),
-        };
-        save_at(
-            dir.path(),
-            "fceumm",
-            "game.nes",
-            &backend,
-            ts("20260802T151205.903+0800"),
-        );
-        let game_dir = dir.path().join("fceumm").join("game.nes");
-        let source = game_dir.join("game.nes.20260802T151205.903+0800.state");
-        // Renaming the file invents a newer-looking timestamp.
-        let renamed = game_dir.join("game.nes.20260802T160000.000+0800.state");
-        fs::copy(&source, &renamed).unwrap();
-
-        let list = list_states_in(dir.path()).unwrap();
-
-        assert_eq!(list.entries.len(), 1);
-        assert_eq!(list.entries[0].timestamp, ts("20260802T151205.903+0800"));
-        assert_eq!(list.malformed.len(), 1);
-        assert_eq!(list.malformed[0].path, renamed);
-        assert!(list.malformed[0].reason.contains("does not match"));
-    }
-
-    #[test]
-    fn load_newest_skips_renamed_states() {
-        let dir = tempfile::tempdir().unwrap();
-        let backend = FakeBackend {
-            state: Cell::new(1),
-        };
-        save_at(
-            dir.path(),
-            "fceumm",
-            "game.nes",
-            &backend,
-            ts("20260802T151205.903+0800"),
-        );
-        let newer = save_at(
-            dir.path(),
-            "fceumm",
-            "game.nes",
-            &backend,
-            ts("20260802T154831.027+0800"),
-        );
-        // A copy renamed to a later timestamp must not become the newest.
-        let game_dir = dir.path().join("fceumm").join("game.nes");
-        fs::copy(
-            &newer,
-            game_dir.join("game.nes.20260802T160000.000+0800.state"),
-        )
-        .unwrap();
-
-        let loaded = load_newest_in(dir.path(), &backend, "fceumm", "game.nes", 8)
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(loaded, newer);
-        assert_eq!(backend.state.get(), 1);
-    }
-
-    #[test]
-    fn load_from_path_accepts_renamed_files() {
+    fn saved_state_is_an_rzip_file() {
         let dir = tempfile::tempdir().unwrap();
         let backend = FakeBackend {
             state: Cell::new(42),
@@ -1367,22 +1132,168 @@ mod tests {
             &backend,
             ts("20260802T151205.903+0800"),
         );
-        let renamed = dir.path().join("my-backup.state");
-        fs::copy(&path, &renamed).unwrap();
-        backend.state.set(7);
 
-        load_from_path(&backend, &renamed, "fceumm", "game.nes", 8).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        assert!(bytes.starts_with(RZIP_MAGIC));
+        assert_eq!(rzip_unwrap(&bytes).unwrap(), encode(&42u64.to_le_bytes()).unwrap());
+    }
+
+    #[test]
+    fn rzip_wrap_matches_the_retroarch_layout() {
+        let plain = encode(&[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        let wrapped = rzip_wrap(&plain);
+
+        assert_eq!(&wrapped[..8], RZIP_MAGIC);
+        assert_eq!(
+            u32::from_le_bytes(wrapped[8..12].try_into().unwrap()),
+            RZIP_DEFAULT_CHUNK_SIZE as u32
+        );
+        assert_eq!(
+            u64::from_le_bytes(wrapped[12..20].try_into().unwrap()),
+            plain.len() as u64
+        );
+        // A single chunk: 4-byte compressed length followed by a zlib stream.
+        let chunk_len = u32::from_le_bytes(wrapped[20..24].try_into().unwrap()) as usize;
+        assert_eq!(wrapped.len(), 20 + 4 + chunk_len);
+        let mut decoder = ZlibDecoder::new(&wrapped[24..]);
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+        assert_eq!(decoded, plain);
+    }
+
+    #[test]
+    fn rzip_roundtrips_across_chunk_boundaries() {
+        let near = (0..300_000u32).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        assert_eq!(rzip_unwrap(&rzip_wrap(&near)).unwrap(), near);
+
+        let exact = (0..RZIP_DEFAULT_CHUNK_SIZE as u32)
+            .map(|i| (i % 251) as u8)
+            .collect::<Vec<_>>();
+        assert_eq!(rzip_unwrap(&rzip_wrap(&exact)).unwrap(), exact);
+
+        let one_over = (0..RZIP_DEFAULT_CHUNK_SIZE as u32 + 1)
+            .map(|i| (i % 251) as u8)
+            .collect::<Vec<_>>();
+        assert_eq!(rzip_unwrap(&rzip_wrap(&one_over)).unwrap(), one_over);
+    }
+
+    fn retroarch_style_container() -> Vec<u8> {
+        // Matches RetroArch's writer: identifier, an unknown block
+        // (e.g. ACHV/RPLY or a future block), the MEM block, then END.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RASTATE");
+        bytes.push(1);
+        bytes.extend_from_slice(b"XXXX");
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&[0xaa; 4]);
+        bytes.extend_from_slice(b"MEM ");
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        bytes.extend_from_slice(&[42, 0, 0, 0, 0, 0, 0, 0]);
+        bytes.extend_from_slice(b"END ");
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn load_accepts_an_uncompressed_retroarch_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = FakeBackend {
+            state: Cell::new(1),
+        };
+        let path = dir.path().join("fixture.state");
+        fs::write(&path, retroarch_style_container()).unwrap();
+
+        backend.state.set(7);
+        load_from_path(&backend, &path).unwrap();
 
         assert_eq!(backend.state.get(), 42);
     }
 
     #[test]
-    fn list_states_reports_oversized_files() {
+    fn load_accepts_an_rzip_wrapped_retroarch_file() {
         let dir = tempfile::tempdir().unwrap();
         let backend = FakeBackend {
             state: Cell::new(1),
         };
-        save_at(
+        let path = dir.path().join("fixture.state");
+        fs::write(&path, rzip_wrap(&retroarch_style_container())).unwrap();
+
+        backend.state.set(7);
+        load_from_path(&backend, &path).unwrap();
+
+        assert_eq!(backend.state.get(), 42);
+    }
+
+    #[test]
+    fn saved_state_pads_payloads_to_8_byte_alignment() {
+        assert_eq!(encode(&[1u8; 8]).unwrap().len(), 32);
+        assert_eq!(encode(&[1u8; 9]).unwrap().len(), 40);
+        assert_eq!(encode(&[1u8; 15]).unwrap().len(), 40);
+        assert_eq!(encode(&[1u8; 16]).unwrap().len(), 40);
+    }
+
+    #[test]
+    fn rzip_unwrap_rejects_malformed_headers() {
+        let wrapped = rzip_wrap(&encode(&[1u8; 8]).unwrap());
+
+        let mut no_chunk_size = wrapped.clone();
+        no_chunk_size[8..12].copy_from_slice(&0u32.to_le_bytes());
+        assert!(matches!(
+            rzip_unwrap(&no_chunk_size),
+            Err(StateError::Truncated)
+        ));
+
+        let mut huge_chunk_size = wrapped.clone();
+        huge_chunk_size[8..12]
+            .copy_from_slice(&(RZIP_MAX_CHUNK_SIZE as u32 + 1).to_le_bytes());
+        assert!(matches!(
+            rzip_unwrap(&huge_chunk_size),
+            Err(StateError::Truncated)
+        ));
+
+        let mut no_total = wrapped.clone();
+        no_total[12..20].copy_from_slice(&0u64.to_le_bytes());
+        assert!(matches!(
+            rzip_unwrap(&no_total),
+            Err(StateError::Truncated)
+        ));
+
+        let mut oversized = wrapped.clone();
+        oversized[12..20].copy_from_slice(&(MAX_RZIP_CONTENT as u64 + 1).to_le_bytes());
+        assert!(matches!(rzip_unwrap(&oversized), Err(StateError::TooLarge { .. })));
+    }
+
+    #[test]
+    fn rzip_unwrap_rejects_truncated_or_corrupt_chunks() {
+        let wrapped = rzip_wrap(&encode(&[1u8; 64]).unwrap());
+
+        assert!(matches!(
+            rzip_unwrap(&wrapped[..20]),
+            Err(StateError::Truncated)
+        ));
+        assert!(matches!(
+            rzip_unwrap(&wrapped[..wrapped.len() - 3]),
+            Err(StateError::Truncated)
+        ));
+
+        let mut corrupt = wrapped.clone();
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 0xff;
+        assert!(matches!(rzip_unwrap(&corrupt), Err(StateError::Truncated)));
+
+        let mut lying = wrapped.clone();
+        lying[20..24].copy_from_slice(&(wrapped.len() as u32).to_le_bytes());
+        assert!(matches!(rzip_unwrap(&lying), Err(StateError::Truncated)));
+    }
+
+    #[test]
+    fn load_newest_skips_corrupt_rzip_states() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = FakeBackend {
+            state: Cell::new(1),
+        };
+        let older = save_at(
             dir.path(),
             "fceumm",
             "game.nes",
@@ -1390,18 +1301,139 @@ mod tests {
             ts("20260802T151205.903+0800"),
         );
         let game_dir = dir.path().join("fceumm").join("game.nes");
-        let oversized = game_dir.join("game.nes.20260802T160000.000+0800.state");
-        fs::File::create(&oversized)
+        let mut corrupt = rzip_wrap(&encode(&[7u8; 8]).unwrap());
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 0xff;
+        fs::write(
+            game_dir.join("game.nes.20260802T154831.027+0800.state"),
+            corrupt,
+        )
+        .unwrap();
+
+        let loaded = load_newest_in(dir.path(), &backend, "fceumm", "game.nes")
             .unwrap()
-            .set_len(MAX_STATE_FILE_SIZE as u64 + 1)
             .unwrap();
 
-        let list = list_states_in(dir.path()).unwrap();
+        assert_eq!(loaded, older);
+        assert_eq!(backend.state.get(), 1);
+    }
 
-        assert_eq!(list.entries.len(), 1);
-        assert_eq!(list.malformed.len(), 1);
-        assert_eq!(list.malformed[0].path, oversized);
-        assert!(list.malformed[0].reason.contains("maximum"));
+    #[test]
+    fn load_rejects_unknown_rzip_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = FakeBackend {
+            state: Cell::new(1),
+        };
+        let mut wrapped = rzip_wrap(&encode(&[1u8; 8]).unwrap());
+        wrapped[6] = 2;
+        let path = dir.path().join("v2.state");
+        fs::write(&path, wrapped).unwrap();
+
+        let error = load_from_path(&backend, &path).unwrap_err();
+
+        assert!(matches!(error, StateError::NotAState));
+    }
+
+    #[test]
+    fn parse_state_skips_unknown_blocks_and_ignores_padding_bytes() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RASTATE");
+        bytes.push(1);
+        bytes.extend_from_slice(b"XXXX");
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(b"abc");
+        bytes.extend_from_slice(&[0xaa; 5]);
+        bytes.extend_from_slice(b"MEM ");
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        bytes.extend_from_slice(&[42, 0, 0, 0, 0, 0, 0, 0]);
+        bytes.extend_from_slice(b"END ");
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+
+        assert_eq!(parse_state(&bytes).unwrap(), &[42, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn parse_state_uses_the_last_mem_block() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RASTATE");
+        bytes.push(1);
+        bytes.extend_from_slice(b"MEM ");
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        bytes.extend_from_slice(&[7, 0, 0, 0, 0, 0, 0, 0]);
+        bytes.extend_from_slice(b"MEM ");
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        bytes.extend_from_slice(&[42, 0, 0, 0, 0, 0, 0, 0]);
+        bytes.extend_from_slice(b"END ");
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+
+        assert_eq!(parse_state(&bytes).unwrap(), &[42, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn parse_state_loads_files_without_an_end_block() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RASTATE");
+        bytes.push(1);
+        bytes.extend_from_slice(b"MEM ");
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        bytes.extend_from_slice(&[42, 0, 0, 0, 0, 0, 0, 0]);
+
+        assert_eq!(parse_state(&bytes).unwrap(), &[42, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn parse_state_rejects_an_end_block_without_a_mem_block() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RASTATE");
+        bytes.push(1);
+        bytes.extend_from_slice(b"END ");
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+
+        assert!(matches!(parse_state(&bytes), Err(StateError::NotAState)));
+    }
+
+    #[test]
+    fn parse_state_rejects_truncated_blocks() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RASTATE");
+        bytes.push(1);
+        bytes.extend_from_slice(b"MEM ");
+        bytes.extend_from_slice(&100u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 8]);
+
+        assert!(matches!(parse_state(&bytes), Err(StateError::Truncated)));
+    }
+
+    #[test]
+    fn parse_state_rejects_every_other_format() {
+        assert!(matches!(parse_state(&[]), Err(StateError::NotAState)));
+        assert!(matches!(parse_state(b"RASTATE"), Err(StateError::NotAState)));
+        assert!(matches!(parse_state(b"JARO...."), Err(StateError::NotAState)));
+        // RZIP-compressed RetroArch states are treated as unknown formats.
+        assert!(matches!(
+            parse_state(b"#RZIPv\x01#........"),
+            Err(StateError::NotAState)
+        ));
+        // Pre-2021 RetroArch states were bare core data.
+        assert!(matches!(
+            parse_state(&[1, 2, 3, 4, 5, 6, 7, 8]),
+            Err(StateError::NotAState)
+        ));
+    }
+
+    #[test]
+    fn parse_state_rejects_future_versions() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RASTATE");
+        bytes.push(2);
+        bytes.extend_from_slice(b"MEM ");
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        bytes.extend_from_slice(&[42, 0, 0, 0, 0, 0, 0, 0]);
+
+        assert!(matches!(
+            parse_state(&bytes),
+            Err(StateError::UnsupportedVersion(2))
+        ));
     }
 
     #[test]
@@ -1421,15 +1453,29 @@ mod tests {
         let oversized = game_dir.join("game.nes.20260802T160000.000+0800.state");
         fs::File::create(&oversized)
             .unwrap()
-            .set_len(load_file_cap(8) as u64 + 1)
+            .set_len(MAX_STATE_FILE_SIZE as u64 + 1)
             .unwrap();
 
-        let loaded = load_newest_in(dir.path(), &backend, "fceumm", "game.nes", 8)
+        let loaded = load_newest_in(dir.path(), &backend, "fceumm", "game.nes")
             .unwrap()
             .unwrap();
 
         assert_eq!(loaded, valid);
         assert_eq!(backend.state.get(), 1);
+    }
+
+    #[test]
+    fn read_state_file_rejects_oversized_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let oversized = dir.path().join("huge.state");
+        fs::File::create(&oversized)
+            .unwrap()
+            .set_len(MAX_STATE_FILE_SIZE as u64 + 1)
+            .unwrap();
+
+        let error = read_state_file(&oversized).unwrap_err();
+
+        assert!(matches!(error, StateError::TooLarge { .. }));
     }
 
     #[test]
@@ -1491,31 +1537,6 @@ mod tests {
     }
 
     #[test]
-    fn list_states_reports_corrupt_containers_with_valid_names() {
-        let dir = tempfile::tempdir().unwrap();
-        let backend = FakeBackend {
-            state: Cell::new(1),
-        };
-        save_at(
-            dir.path(),
-            "fceumm",
-            "game.nes",
-            &backend,
-            ts("20260802T151205.903+0800"),
-        );
-        let game_dir = dir.path().join("fceumm").join("game.nes");
-        let corrupt = game_dir.join("game.nes.20260802T160000.000+0800.state");
-        fs::write(&corrupt, b"not a state").unwrap();
-
-        let list = list_states_in(dir.path()).unwrap();
-
-        assert_eq!(list.entries.len(), 1);
-        assert_eq!(list.malformed.len(), 1);
-        assert_eq!(list.malformed[0].path, corrupt);
-        assert!(list.malformed[0].reason.contains("not an Asoby state"));
-    }
-
-    #[test]
     fn list_states_reports_states_in_the_wrong_game_directory() {
         let dir = tempfile::tempdir().unwrap();
         let backend = FakeBackend {
@@ -1535,7 +1556,9 @@ mod tests {
             .join("game.nes.20260802T151205.903+0800.state");
         let other = dir.path().join("fceumm").join("other.nes");
         fs::create_dir_all(&other).unwrap();
-        let copied = other.join("other.nes.20260802T151205.903+0800.state");
+        // A state file whose filename names a different game than its
+        // directory cannot be distinguished from a foreign copy.
+        let copied = other.join("game.nes.20260802T151205.903+0800.state");
         fs::copy(&source, &copied).unwrap();
 
         let list = list_states_in(dir.path()).unwrap();
@@ -1616,9 +1639,32 @@ mod tests {
             ts("20260802T151205.903+0800"),
         );
 
-        let loaded = load_newest_in(dir.path(), &backend, "fceumm", "game.nes", 8)
+        let loaded = load_newest_in(dir.path(), &backend, "fceumm", "game.nes")
             .unwrap()
             .unwrap();
         assert_eq!(loaded, suffixed);
     }
+
+    #[test]
+    fn load_from_path_accepts_renamed_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = FakeBackend {
+            state: Cell::new(42),
+        };
+        let path = save_at(
+            dir.path(),
+            "fceumm",
+            "game.nes",
+            &backend,
+            ts("20260802T151205.903+0800"),
+        );
+        let renamed = dir.path().join("my-backup.state");
+        fs::copy(&path, &renamed).unwrap();
+        backend.state.set(7);
+
+        load_from_path(&backend, &renamed).unwrap();
+
+        assert_eq!(backend.state.get(), 42);
+    }
 }
+

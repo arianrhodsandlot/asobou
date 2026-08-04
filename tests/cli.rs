@@ -102,11 +102,31 @@ fn help_lists_fps() {
 }
 
 #[test]
-fn help_lists_mute() {
+fn help_lists_muted() {
     let (stdout, _stderr, _code) = run(&[]);
 
-    assert!(stdout.contains("-m, --mute"));
+    assert!(stdout.contains("-m, --muted"));
     assert!(!stdout.contains("--no-audio"));
+}
+
+#[test]
+fn boolean_display_and_audio_flags_accept_bare_and_explicit_values() {
+    for args in [
+        &["--primary-screen"][..],
+        &["--primary-screen=true"],
+        &["--primary-screen=false"],
+        &["--muted"],
+        &["--muted=true"],
+        &["--muted=false"],
+    ] {
+        let (stdout, stderr, code) = run(args);
+        assert_eq!(code, 0, "{args:?}: {stderr}");
+        assert!(stdout.contains("Usage:"), "{args:?}: {stdout}");
+    }
+
+    let (_stdout, stderr, code) = run(&["--muted", "not-a-rom"]);
+    assert_ne!(code, 2);
+    assert!(stderr.contains("No known system"), "{stderr}");
 }
 
 #[test]
@@ -134,6 +154,8 @@ fn subcommand_help_shows_examples() {
                 "asoby config edit",
                 "asoby config get rewind.enabled",
                 "asoby config set rewind.buffer_size_mb 64",
+                "asoby config set display.fps 30",
+                "asoby config set audio.muted true",
                 "asoby config unset rewind.buffer_size_mb",
             ],
         ),
@@ -437,7 +459,7 @@ fn config_list_shows_supported_keys_values_and_sources() {
 
     assert_eq!(code, 0, "{stderr}");
     assert!(stdout.starts_with("KEY"));
-    assert_eq!(stdout.lines().count(), 28);
+    assert_eq!(stdout.lines().count(), 32);
     let configured = stdout
         .lines()
         .find(|line| line.starts_with("rewind.enabled"))
@@ -474,6 +496,23 @@ fn config_get_prints_effective_values() {
     let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "status.controls"]);
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(stdout, "true\n");
+
+    let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "display.renderer"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "auto\n");
+
+    let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "display.fps"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "60\n");
+
+    let (stdout, stderr, code) =
+        run_with_config(&config, &["config", "get", "display.primary_screen"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "false\n");
+
+    let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "audio.muted"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "false\n");
 
     let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "input.l"]);
     assert_ne!(code, 0);
@@ -542,6 +581,32 @@ fn config_set_preserves_comments_and_rejects_invalid_candidates() {
     assert_ne!(code, 0);
     assert!(stderr.contains("expected true or false"));
     assert_eq!(std::fs::read_to_string(&config).unwrap(), valid);
+}
+
+#[test]
+fn config_set_supports_display_and_audio_settings() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+
+    for (key, value, expected) in [
+        ("display.renderer", "ascii", "display.renderer = ascii\n"),
+        ("display.fps", "30", "display.fps = 30\n"),
+        (
+            "display.primary_screen",
+            "true",
+            "display.primary_screen = true\n",
+        ),
+        ("audio.muted", "true", "audio.muted = true\n"),
+    ] {
+        let (stdout, stderr, code) = run_with_config(&config, &["config", "set", key, value]);
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(stdout, expected);
+    }
+
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "[display]\nrenderer = \"ascii\"\nfps = 30\nprimary_screen = true\n\n[audio]\nmuted = true\n"
+    );
 }
 
 #[cfg(unix)]

@@ -150,7 +150,7 @@ pub struct RunConfig {
     pub renderer: crate::renderer::RendererMode,
     pub core: Option<String>,
     pub render_fps: u32,
-    pub no_alt_screen: bool,
+    pub primary_screen: bool,
     pub muted: bool,
     pub rom: PathBuf,
     pub input_bindings: crate::input::InputBindings,
@@ -294,7 +294,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         renderer: renderer_mode,
         core: core_arg,
         render_fps,
-        no_alt_screen,
+        primary_screen,
         muted,
         rom,
         input_bindings,
@@ -340,7 +340,8 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let status_lines = status_lines(&input_bindings, status_settings);
-    let renderer = crate::renderer::create(renderer_mode, &rom, no_alt_screen, status_lines.len())?;
+    let renderer =
+        crate::renderer::create(renderer_mode, &rom, primary_screen, status_lines.len())?;
     let core = unsafe { crate::emulation::libretro::load_core(&core_path)? };
     let mut audio_backend = if muted {
         crate::audio::muted()

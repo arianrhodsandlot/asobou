@@ -12,9 +12,53 @@ use toml_edit::{DocumentMut, Item, Table};
 #[serde(default, deny_unknown_fields)]
 struct Config {
     input: InputConfig,
+    display: DisplayConfig,
+    audio: AudioConfig,
     rewind: RewindConfig,
     state: StateConfig,
     status: StatusConfig,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct DisplayConfig {
+    renderer: crate::renderer::RendererMode,
+    fps: u32,
+    primary_screen: bool,
+}
+
+impl Default for DisplayConfig {
+    fn default() -> Self {
+        Self {
+            renderer: crate::renderer::RendererMode::Auto,
+            fps: 60,
+            primary_screen: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct AudioConfig {
+    muted: bool,
+}
+
+impl Default for AudioConfig {
+    fn default() -> Self {
+        Self { muted: false }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DisplaySettings {
+    pub renderer: crate::renderer::RendererMode,
+    pub fps: u32,
+    pub primary_screen: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AudioSettings {
+    pub muted: bool,
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -81,6 +125,8 @@ pub struct RewindSettings {
 #[derive(Debug)]
 pub struct Settings {
     pub input_bindings: crate::input::InputBindings,
+    pub display: DisplaySettings,
+    pub audio: AudioSettings,
     pub rewind: RewindSettings,
     pub state: StateSettings,
     pub status: StatusSettings,
@@ -297,22 +343,7 @@ fn load_settings_from(path: &Path) -> Result<Settings, ConfigError> {
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
-            return Ok(Settings {
-                input_bindings: crate::input::InputBindings::default(),
-                rewind: RewindSettings {
-                    enabled: true,
-                    granularity: 2,
-                    buffer_size: 20 * 1024 * 1024,
-                },
-                state: StateSettings {
-                    save_on_exit: false,
-                },
-                status: StatusSettings {
-                    enabled: true,
-                    gamepad: true,
-                    controls: true,
-                },
-            });
+            return settings_from_config(Config::default(), path);
         }
         Err(source) => {
             return Err(ConfigError::Read {
@@ -338,7 +369,16 @@ fn parse_config(contents: &str, path: &Path) -> Result<Config, ConfigError> {
 }
 
 fn settings_from_config(config: Config, path: &Path) -> Result<Settings, ConfigError> {
+    validate_display(&config.display, path)?;
     validate_rewind(&config.rewind, path)?;
+    let display = DisplaySettings {
+        renderer: config.display.renderer,
+        fps: config.display.fps,
+        primary_screen: config.display.primary_screen,
+    };
+    let audio = AudioSettings {
+        muted: config.audio.muted,
+    };
     let rewind = RewindSettings {
         enabled: config.rewind.enabled,
         granularity: config.rewind.granularity,
@@ -391,6 +431,8 @@ fn settings_from_config(config: Config, path: &Path) -> Result<Settings, ConfigE
     })?;
     Ok(Settings {
         input_bindings,
+        display,
+        audio,
         rewind,
         state: StateSettings {
             save_on_exit: config.state.save_on_exit,
@@ -540,6 +582,26 @@ const CONFIG_KEYS: &[ConfigKey] = &[
         name: "input.load_state",
         kind: ConfigValueKind::String,
         value: |config| Some(ConfigValue::String(config.input.load_state.clone())),
+    },
+    ConfigKey {
+        name: "display.renderer",
+        kind: ConfigValueKind::String,
+        value: |config| Some(ConfigValue::String(config.display.renderer.as_str().into())),
+    },
+    ConfigKey {
+        name: "display.fps",
+        kind: ConfigValueKind::Integer,
+        value: |config| Some(ConfigValue::Integer(i64::from(config.display.fps))),
+    },
+    ConfigKey {
+        name: "display.primary_screen",
+        kind: ConfigValueKind::Boolean,
+        value: |config| Some(ConfigValue::Boolean(config.display.primary_screen)),
+    },
+    ConfigKey {
+        name: "audio.muted",
+        kind: ConfigValueKind::Boolean,
+        value: |config| Some(ConfigValue::Boolean(config.audio.muted)),
     },
     ConfigKey {
         name: "rewind.enabled",
@@ -845,6 +907,16 @@ pub fn edit() -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_display(display: &DisplayConfig, path: &Path) -> Result<(), ConfigError> {
+    if !(1..=240).contains(&display.fps) {
+        return Err(ConfigError::Invalid {
+            path: path.to_path_buf(),
+            reason: "[display] fps must be between 1 and 240".into(),
+        });
+    }
+    Ok(())
+}
+
 fn validate_rewind(rewind: &RewindConfig, path: &Path) -> Result<(), ConfigError> {
     if rewind.granularity == 0 {
         return Err(ConfigError::Invalid {
@@ -920,9 +992,50 @@ mod tests {
         assert_eq!(settings.input_bindings.quit_name(), "escape");
         assert_eq!(settings.input_bindings.rewind_name(), "r");
         assert!(settings.input_bindings.rewind_enabled());
+        assert_eq!(
+            settings.display,
+            DisplaySettings {
+                renderer: crate::renderer::RendererMode::Auto,
+                fps: 60,
+                primary_screen: false,
+            }
+        );
+        assert_eq!(settings.audio, AudioSettings { muted: false });
         assert!(settings.rewind.enabled);
         assert_eq!(settings.rewind.granularity, 2);
         assert_eq!(settings.rewind.buffer_size, 20 * 1024 * 1024);
+    }
+
+    #[test]
+    fn display_and_audio_settings_are_configurable() {
+        let settings = parse_settings(
+            "[display]\nrenderer = \"ascii\"\nfps = 30\nprimary_screen = true\n\n[audio]\nmuted = true\n",
+            Path::new("config.toml"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            settings.display,
+            DisplaySettings {
+                renderer: crate::renderer::RendererMode::Ascii,
+                fps: 30,
+                primary_screen: true,
+            }
+        );
+        assert_eq!(settings.audio, AudioSettings { muted: true });
+    }
+
+    #[test]
+    fn display_fps_must_be_in_range() {
+        for fps in [0, 241] {
+            let error = parse_settings(
+                &format!("[display]\nfps = {fps}\n"),
+                Path::new("config.toml"),
+            )
+            .unwrap_err();
+
+            assert!(error.to_string().contains("fps"));
+        }
     }
 
     #[test]

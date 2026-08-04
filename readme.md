@@ -45,7 +45,8 @@ Asoby loads the first applicable config path:
 4. `%APPDATA%\asoby\config.toml` on Windows
 
 The config file is optional and an omitted setting keeps its default. Every
-value in the example below is a default:
+value in the example below is a default. Explicit command-line values override
+configuration values.
 
 ```toml
 [input]
@@ -74,6 +75,14 @@ load_state = "f4"  # Load the newest state
 # l3 = "t"
 # r3 = "y"
 
+[display]
+renderer = "auto"       # auto, graphic, block, ascii, or debug
+fps = 60                 # Maximum terminal refresh rate, from 1 to 240
+primary_screen = false  # Use the primary buffer when true
+
+[audio]
+muted = false            # Disable game audio when true
+
 [status]
 enabled = true         # Show the on-screen keybinding status
 gamepad = true         # Show gamepad inputs on the upper status line
@@ -98,6 +107,10 @@ Set `status.enabled` to `false` to hide both lines, or toggle `gamepad` and
 `controls` independently. Save and load notifications remain visible when the
 keybinding status is hidden. Notifications are anchored to the bottom-left and
 do not change the centered keybindings' position.
+
+The `--primary-screen` and `--muted` options can be used without a value to
+enable them, or with an equals-separated boolean to explicitly choose a value:
+`--primary-screen`, `--primary-screen=false`, `--muted`, and `--muted=false`.
 
 Each input takes one standalone key, and a key cannot be assigned to more than
 one input. Key combinations such as `ctrl+x` are not supported.

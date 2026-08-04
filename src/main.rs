@@ -31,14 +31,8 @@ struct Args {
     #[command(subcommand)]
     command: Option<Command>,
 
-    #[arg(
-        short = 'r',
-        long = "renderer",
-        default_value = "auto",
-        value_enum,
-        help = "Rendering backend"
-    )]
-    renderer: RendererMode,
+    #[arg(short = 'r', long = "renderer", value_enum, help = "Rendering backend")]
+    renderer: Option<RendererMode>,
 
     #[arg(
         short = 'c',
@@ -50,21 +44,36 @@ struct Args {
     #[arg(
         short = 'f',
         long = "fps",
-        default_value_t = 60,
         value_parser = clap::value_parser!(u32).range(1..=240),
         help = "Maximum terminal refresh rate"
     )]
-    fps: u32,
+    fps: Option<u32>,
 
     #[arg(
         short = 'p',
         long = "primary-screen",
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true,
+        value_parser = clap::value_parser!(bool),
+        value_name = "BOOL",
         help = "Render in the primary terminal buffer, leaving the final frame visible on exit"
     )]
-    no_alt_screen: bool,
+    primary_screen: Option<bool>,
 
-    #[arg(short = 'm', long = "mute", help = "Disable game audio")]
-    no_audio: bool,
+    #[arg(
+        short = 'm',
+        long = "muted",
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true,
+        value_parser = clap::value_parser!(bool),
+        value_name = "BOOL",
+        help = "Disable game audio"
+    )]
+    muted: Option<bool>,
 
     #[arg(
         short = 'v',
@@ -96,6 +105,8 @@ enum Command {
   asoby config edit                         Open the config in $VISUAL or $EDITOR
   asoby config get rewind.enabled           Print the effective rewind setting
   asoby config set rewind.buffer_size_mb 64 Override the rewind buffer size
+  asoby config set display.fps 30            Set the terminal refresh rate
+  asoby config set audio.muted true         Disable game audio by default
   asoby config unset rewind.buffer_size_mb  Restore the default rewind buffer size"
     )]
     Config {
@@ -229,11 +240,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     let config = RunConfig {
-        renderer: args.renderer,
+        renderer: args.renderer.unwrap_or(settings.display.renderer),
         core: args.core,
-        render_fps: args.fps,
-        no_alt_screen: args.no_alt_screen,
-        muted: args.no_audio,
+        render_fps: args.fps.unwrap_or(settings.display.fps),
+        primary_screen: args
+            .primary_screen
+            .unwrap_or(settings.display.primary_screen),
+        muted: args.muted.unwrap_or(settings.audio.muted),
         rom,
         input_bindings: settings.input_bindings,
         rewind: settings.rewind,

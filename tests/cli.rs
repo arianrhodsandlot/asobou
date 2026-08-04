@@ -261,6 +261,7 @@ fn core_remove_unknown_core_is_noop() {
 fn help_lists_state_flag_and_subcommand() {
     let (stdout, _stderr, _code) = run(&[]);
     assert!(stdout.contains("--state"));
+    assert!(stdout.contains("--resume"));
     assert!(stdout.contains("state"));
 
     let (stdout, _stderr, code) = run(&["state", "--help"]);
@@ -268,6 +269,16 @@ fn help_lists_state_flag_and_subcommand() {
     assert!(stdout.contains("list"));
     assert!(!stdout.contains("remove"));
     assert!(!stdout.contains("info"));
+}
+
+#[test]
+fn resume_and_state_cannot_be_combined() {
+    let (_stdout, stderr, code) = run(&["--state", "backup.state", "--resume"]);
+
+    assert_ne!(code, 0);
+    assert!(stderr.contains("cannot be used with"));
+    assert!(stderr.contains("--state"));
+    assert!(stderr.contains("--resume"));
 }
 
 #[test]
@@ -459,7 +470,7 @@ fn config_list_shows_supported_keys_values_and_sources() {
 
     assert_eq!(code, 0, "{stderr}");
     assert!(stdout.starts_with("KEY"));
-    assert_eq!(stdout.lines().count(), 32);
+    assert_eq!(stdout.lines().count(), 33);
     let configured = stdout
         .lines()
         .find(|line| line.starts_with("rewind.enabled"))
@@ -472,6 +483,12 @@ fn config_list_shows_supported_keys_values_and_sources() {
         .unwrap();
     assert!(default.contains("x"));
     assert!(default.ends_with("default"));
+    let resume = stdout
+        .lines()
+        .find(|line| line.starts_with("state.resume"))
+        .unwrap();
+    assert!(resume.contains("false"));
+    assert!(resume.ends_with("default"));
     let optional = stdout
         .lines()
         .find(|line| line.starts_with("input.l "))
@@ -541,6 +558,16 @@ fn config_set_creates_minimal_typed_overrides() {
     let contents = std::fs::read_to_string(&config).unwrap();
     assert!(contents.contains("buffer_size_mb = 64"));
     assert!(contents.contains("save_on_exit = true"));
+
+    let (stdout, stderr, code) =
+        run_with_config(&config, &["config", "set", "state.resume", "true"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "state.resume = true\n");
+    assert!(
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .contains("resume = true")
+    );
 
     let (stdout, stderr, code) =
         run_with_config(&config, &["config", "set", "status.gamepad", "false"]);

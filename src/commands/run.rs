@@ -157,6 +157,7 @@ pub struct RunConfig {
     pub rewind: crate::config::RewindSettings,
     pub status: crate::config::StatusSettings,
     pub startup_state: Option<PathBuf>,
+    pub resume: bool,
     pub save_on_exit: bool,
 }
 
@@ -301,6 +302,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         rewind: rewind_settings,
         status: status_settings,
         startup_state,
+        resume,
         save_on_exit,
     } = config;
 
@@ -401,6 +403,8 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
                 (core.retro_deinit)();
                 std::process::exit(1);
             }
+        } else if resume && serialization_supported {
+            let _ = crate::emulation::state::load_newest(&core, &core_name, &game_name, state_size);
         }
 
         let mut av_info: crate::emulation::libretro::RetroSystemAvInfo = mem::zeroed();

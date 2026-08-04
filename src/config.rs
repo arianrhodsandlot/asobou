@@ -65,11 +65,13 @@ pub struct AudioSettings {
 #[serde(default, deny_unknown_fields)]
 struct StateConfig {
     save_on_exit: bool,
+    resume: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct StateSettings {
     pub save_on_exit: bool,
+    pub resume: bool,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -436,6 +438,7 @@ fn settings_from_config(config: Config, path: &Path) -> Result<Settings, ConfigE
         rewind,
         state: StateSettings {
             save_on_exit: config.state.save_on_exit,
+            resume: config.state.resume,
         },
         status: StatusSettings {
             enabled: config.status.enabled,
@@ -630,6 +633,11 @@ const CONFIG_KEYS: &[ConfigKey] = &[
         name: "state.save_on_exit",
         kind: ConfigValueKind::Boolean,
         value: |config| Some(ConfigValue::Boolean(config.state.save_on_exit)),
+    },
+    ConfigKey {
+        name: "state.resume",
+        kind: ConfigValueKind::Boolean,
+        value: |config| Some(ConfigValue::Boolean(config.state.resume)),
     },
     ConfigKey {
         name: "status.enabled",
@@ -1145,6 +1153,22 @@ mod tests {
             parse_settings("[state]\nsave_on_exit = true\n", Path::new("config.toml")).unwrap();
 
         assert!(settings.state.save_on_exit);
+    }
+
+    #[test]
+    fn resume_defaults_to_false() {
+        let settings =
+            parse_settings("[rewind]\nenabled = false\n", Path::new("config.toml")).unwrap();
+
+        assert!(!settings.state.resume);
+    }
+
+    #[test]
+    fn resume_parses_when_enabled() {
+        let settings =
+            parse_settings("[state]\nresume = true\n", Path::new("config.toml")).unwrap();
+
+        assert!(settings.state.resume);
     }
 
     #[test]

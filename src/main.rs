@@ -23,6 +23,7 @@ use std::path::PathBuf;
   asoby 'Streets of Rage 2.md' -r ascii              Start a game and render as ASCII characters
   asoby 'Super Castlevania IV.zip' -c snes9x         Run with an explicit core
   asoby 'Super Metroid.sfc' --state ~/backup.state   Load a save state at startup
+  asoby 'Super Metroid.sfc' --resume                 Load the latest managed state at startup
   asoby core install genesis_plus_gx                 Install a libretro core
   asoby config set rewind.buffer_size_mb 64          Set a configuration value
   asoby state list 'Pokemon Emerald.gba' --core mgba List saved states, filtered"
@@ -90,6 +91,19 @@ struct Args {
         help = "Load a save state file after the core starts"
     )]
     state: Option<PathBuf>,
+
+    #[arg(
+        long,
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true,
+        value_parser = clap::value_parser!(bool),
+        value_name = "BOOL",
+        conflicts_with = "state",
+        help = "Load the latest managed save state after the core starts"
+    )]
+    resume: Option<bool>,
 
     #[arg(help = "Path to the ROM file to load")]
     rom: Option<PathBuf>,
@@ -252,6 +266,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rewind: settings.rewind,
         status: settings.status,
         startup_state: args.state,
+        resume: args.resume.unwrap_or(settings.state.resume),
         save_on_exit: settings.state.save_on_exit,
     };
     commands::run::run(config)

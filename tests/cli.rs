@@ -145,6 +145,14 @@ fn subcommand_help_shows_examples() {
                 "asoby state list 'Pokemon Emerald.gba' --core mgba",
             ],
         ),
+        (
+            &["brew", "--help"],
+            &[
+                "asoby brew flappybird.nes",
+                "asoby brew pacrun.gba --renderer ascii",
+                "asoby brew blt.sfc --core snes9x",
+            ],
+        ),
     ] {
         let (stdout, stderr, code) = run(args);
         assert_eq!(code, 0, "{stderr}");
@@ -156,12 +164,44 @@ fn subcommand_help_shows_examples() {
 }
 
 #[test]
+fn brew_help_lists_launch_options() {
+    let (stdout, stderr, code) = run(&["brew", "--help"]);
+
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("--renderer"));
+    assert!(stdout.contains("--core"));
+    assert!(stdout.contains("--state"));
+    assert!(stdout.contains("--resume"));
+}
+
+#[test]
+fn brew_without_a_game_shows_usage_guidance() {
+    let (stdout, stderr, code) = run(&["brew"]);
+
+    assert_ne!(code, 0);
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("Downloads a supported Retrobrews homebrew ROM"));
+    assert!(stderr.contains("Supported extensions: .gbc, .rom, .nes"));
+    assert!(stderr.contains("asoby brew flappybird.nes"));
+}
+
+#[test]
+fn brew_rejects_unsupported_extensions_without_network() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_stdout, stderr, code) = run_in(Some(dir.path()), &["brew", "game.bin", "--muted"]);
+
+    assert_ne!(code, 0);
+    assert!(stderr.contains("Unsupported homebrew game extension: .bin"));
+}
+
+#[test]
 fn help_has_no_ansi_styling() {
     for args in [
         &["--help"][..],
         &["config", "--help"],
         &["state", "--help"],
         &["core", "--help"],
+        &["brew", "--help"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
             .env("CLICOLOR_FORCE", "1")

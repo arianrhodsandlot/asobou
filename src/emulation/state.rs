@@ -1667,4 +1667,3 @@ mod tests {
         assert_eq!(backend.state.get(), 42);
     }
 }
-

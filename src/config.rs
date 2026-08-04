@@ -37,16 +37,10 @@ impl Default for DisplayConfig {
     }
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct AudioConfig {
     muted: bool,
-}
-
-impl Default for AudioConfig {
-    fn default() -> Self {
-        Self { muted: false }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

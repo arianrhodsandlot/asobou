@@ -6,7 +6,7 @@ mod emulation;
 mod input;
 mod renderer;
 
-use clap::{FromArgMatches, Parser, Subcommand};
+use clap::{Args as ClapArgs, FromArgMatches, Parser, Subcommand};
 use commands::run::RunConfig;
 use renderer::RendererMode;
 use std::path::PathBuf;
@@ -24,6 +24,7 @@ use std::path::PathBuf;
   asoby 'Super Castlevania IV.zip' -c snes9x         Run with an explicit core
   asoby 'Super Metroid.sfc' --state ~/backup.state   Load a save state at startup
   asoby 'Super Metroid.sfc' --resume                 Load the latest managed state at startup
+  asoby brew flappybird.nes                          Download and play a homebrew game
   asoby core install genesis_plus_gx                 Install a libretro core
   asoby config set rewind.buffer_size_mb 64          Set a configuration value
   asoby state list 'Pokemon Emerald.gba' --core mgba List saved states, filtered"
@@ -32,6 +33,23 @@ struct Args {
     #[command(subcommand)]
     command: Option<Command>,
 
+    #[command(flatten)]
+    launch: LaunchArgs,
+
+    #[arg(
+        short = 'v',
+        long = "version",
+        action = clap::ArgAction::Version,
+        help = "Print version"
+    )]
+    version: (),
+
+    #[arg(help = "Path to the ROM file to load")]
+    rom: Option<PathBuf>,
+}
+
+#[derive(ClapArgs)]
+struct LaunchArgs {
     #[arg(short = 'r', long = "renderer", value_enum, help = "Rendering backend")]
     renderer: Option<RendererMode>,
 
@@ -77,14 +95,6 @@ struct Args {
     muted: Option<bool>,
 
     #[arg(
-        short = 'v',
-        long = "version",
-        action = clap::ArgAction::Version,
-        help = "Print version"
-    )]
-    version: (),
-
-    #[arg(
         short = 's',
         long = "state",
         value_name = "PATH",
@@ -93,6 +103,7 @@ struct Args {
     state: Option<PathBuf>,
 
     #[arg(
+        short = 'R',
         long,
         action = clap::ArgAction::Set,
         num_args = 0..=1,
@@ -104,9 +115,6 @@ struct Args {
         help = "Load the latest managed save state after the core starts"
     )]
     resume: Option<bool>,
-
-    #[arg(help = "Path to the ROM file to load")]
-    rom: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -151,6 +159,24 @@ enum Command {
     State {
         #[command(subcommand)]
         action: StateAction,
+    },
+    #[command(
+        about = "Download and play a Retrobrews homebrew game",
+        arg_required_else_help = true,
+        after_help = "Downloads a supported Retrobrews homebrew ROM on first use and reuses it from the local cache thereafter.
+
+Supported extensions: .gbc, .rom, .nes, .sms, .gba, .sfc, .d64, .tap.
+
+Examples:
+  asoby brew flappybird.nes
+  asoby brew pacrun.gba --renderer ascii
+  asoby brew blt.sfc --core snes9x"
+    )]
+    Brew {
+        #[arg(help = "Homebrew ROM filename, including its extension")]
+        game: String,
+        #[command(flatten)]
+        launch: LaunchArgs,
     },
 }
 
@@ -200,45 +226,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut matches = command.get_matches_mut();
     let args = Args::from_arg_matches_mut(&mut matches)?;
 
-    if let Some(Command::Config { action }) = args.command {
-        let result = match action {
-            ConfigAction::List => commands::config::list(),
-            ConfigAction::Edit => commands::config::edit(),
-            ConfigAction::Get { key } => commands::config::get(&key),
-            ConfigAction::Set { key, value } => commands::config::set(&key, &value),
-            ConfigAction::Unset { key } => commands::config::unset(&key),
-        };
-        if let Err(error) = result {
-            eprintln!("Error: {error}");
-            std::process::exit(1);
+    match args.command {
+        Some(Command::Config { action }) => {
+            let result = match action {
+                ConfigAction::List => commands::config::list(),
+                ConfigAction::Edit => commands::config::edit(),
+                ConfigAction::Get { key } => commands::config::get(&key),
+                ConfigAction::Set { key, value } => commands::config::set(&key, &value),
+                ConfigAction::Unset { key } => commands::config::unset(&key),
+            };
+            if let Err(error) = result {
+                eprintln!("Error: {error}");
+                std::process::exit(1);
+            }
+            return Ok(());
         }
-        return Ok(());
-    }
-
-    if let Some(Command::Core { action }) = args.command {
-        match action {
+        Some(Command::Core { action }) => match action {
             CoreAction::List => {
                 commands::core::list();
                 return Ok(());
             }
-            CoreAction::Install { name } => {
-                return commands::core::install(&name);
-            }
-            CoreAction::Update { name } => {
-                return commands::core::update(name.as_deref());
-            }
-            CoreAction::Remove { name } => {
-                return commands::core::remove(&name);
-            }
-        }
-    }
-
-    if let Some(Command::State { action }) = args.command {
-        match action {
+            CoreAction::Install { name } => return commands::core::install(&name),
+            CoreAction::Update { name } => return commands::core::update(name.as_deref()),
+            CoreAction::Remove { name } => return commands::core::remove(&name),
+        },
+        Some(Command::State { action }) => match action {
             StateAction::List { rom, core } => {
                 return commands::state::list(rom.as_deref(), core.as_deref());
             }
+        },
+        Some(Command::Brew { game, launch }) => {
+            let rom = commands::brew::download(&game).map_err(std::io::Error::other)?;
+            return commands::run::run(run_config(launch, rom));
         }
+        None => {}
     }
 
     let Some(rom) = args.rom else {
@@ -246,6 +267,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
 
+    commands::run::run(run_config(args.launch, rom))
+}
+
+fn run_config(launch: LaunchArgs, rom: PathBuf) -> RunConfig {
     let settings = match config::load_settings() {
         Ok(settings) => settings,
         Err(error) => {
@@ -253,21 +278,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
-    let config = RunConfig {
-        renderer: args.renderer.unwrap_or(settings.display.renderer),
-        core: args.core,
-        render_fps: args.fps.unwrap_or(settings.display.fps),
-        primary_screen: args
+    RunConfig {
+        renderer: launch.renderer.unwrap_or(settings.display.renderer),
+        core: launch.core,
+        render_fps: launch.fps.unwrap_or(settings.display.fps),
+        primary_screen: launch
             .primary_screen
             .unwrap_or(settings.display.primary_screen),
-        muted: args.muted.unwrap_or(settings.audio.muted),
+        muted: launch.muted.unwrap_or(settings.audio.muted),
         rom,
         input_bindings: settings.input_bindings,
         rewind: settings.rewind,
         status: settings.status,
-        startup_state: args.state,
-        resume: args.resume.unwrap_or(settings.state.resume),
+        startup_state: launch.state,
+        resume: launch.resume.unwrap_or(settings.state.resume),
         save_on_exit: settings.state.save_on_exit,
-    };
-    commands::run::run(config)
+    }
 }

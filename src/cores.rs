@@ -146,6 +146,21 @@ static SYSTEMS: LazyLock<Vec<System>> = LazyLock::new(|| {
             recommended_core: "gearcoleco",
         },
         System {
+            extensions: &["rom"],
+            signatures: &[],
+            recommended_core: "gearcoleco",
+        },
+        System {
+            extensions: &["d64"],
+            signatures: &[],
+            recommended_core: "vice_x64sc",
+        },
+        System {
+            extensions: &["tap"],
+            signatures: &[],
+            recommended_core: "fuse",
+        },
+        System {
             extensions: &["tic"],
             signatures: &[],
             recommended_core: "tic80",
@@ -571,6 +586,33 @@ mod tests {
         };
 
         assert_eq!(core_name, "snes9x");
+    }
+
+    #[test]
+    fn rom_extension_selects_gearcoleco() {
+        let Detection::Detected { core_name } = detect_by_extension("rom") else {
+            panic!("expected a detected core");
+        };
+
+        assert_eq!(core_name, "gearcoleco");
+    }
+
+    #[test]
+    fn d64_extension_selects_vice_x64sc() {
+        let Detection::Detected { core_name } = detect_by_extension("d64") else {
+            panic!("expected a detected core");
+        };
+
+        assert_eq!(core_name, "vice_x64sc");
+    }
+
+    #[test]
+    fn tap_extension_selects_fuse() {
+        let Detection::Detected { core_name } = detect_by_extension("tap") else {
+            panic!("expected a detected core");
+        };
+
+        assert_eq!(core_name, "fuse");
     }
 
     #[test]

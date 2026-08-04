@@ -2,6 +2,14 @@
 name = "asoby"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.97"
+description = "Play retro games directly in your terminal"
+license = "MIT"
+repository = "https://github.com/arianrhodsandlot/asoby"
+homepage = "https://github.com/arianrhodsandlot/asoby"
+readme = "readme.md"
+keywords = ["emulator", "libretro", "retro-gaming", "terminal", "cli"]
+categories = ["command-line-utilities", "games"]
 
 [dependencies]
 base64 = "0.22"

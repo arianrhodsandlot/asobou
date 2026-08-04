@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            extension: ".exe"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize mise environment
+        uses: jdx/mise-action@v4
+        with:
+          cache: true
+          github_token: ${{ github.token }}
+          mise_toml: |
+            [tools]
+            rust = "stable"
+            yq = "4"
+
+      - name: Install Rust target
+        shell: bash
+        run: rustup target add "${{ matrix.target }}"
+
+      - name: Inject release version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          yq -p=toml -o=toml -i '.package.version = (strenv(RELEASE_TAG) | sub("^v"; ""))' Cargo.toml
+          cargo update -p asoby --offline
+
+      - name: Install Linux audio dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends libasound2-dev pkg-config
+
+      - name: Verify package metadata
+        shell: bash
+        run: cargo metadata --locked --no-deps --format-version 1 > /dev/null
+
+      - name: Build release binary
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+
+      - name: Run tests
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo test --locked
+
+      - name: Prepare release binary
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_EXTENSION: ${{ matrix.extension }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          binary="asoby${RELEASE_EXTENSION}"
+          asset="release/asoby-${RELEASE_TAG}-${RELEASE_TARGET}${RELEASE_EXTENSION}"
+          cp "target/${RELEASE_TARGET}/release/${binary}" "$asset"
+          if [[ -z "$RELEASE_EXTENSION" ]]; then chmod +x "$asset"; fi
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: "release/*"
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            release/*
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

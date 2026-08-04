@@ -21,14 +21,14 @@ use std::path::PathBuf;
     disable_help_subcommand = true,
     after_help = "Examples:
   asoby 'Super Mario Bros.nes'                       Start a game
-  asoby 'Streets of Rage 2.md' -r ascii              Start a game and render as ASCII characters
-  asoby 'Super Castlevania IV.zip' -c snes9x         Run with an explicit core
-  asoby 'Super Metroid.sfc' --state ~/backup.state   Load a save state at startup
+  asoby 'Streets of Rage 2.md' --renderer=ascii      Start a game and render as ASCII characters
+  asoby 'Super Castlevania IV.zip' --core=snes9x     Run with an explicit core
+  asoby 'Super Metroid.sfc' --state=~/backup.state   Load a save state at startup
   asoby 'Super Metroid.sfc' --resume                 Load the latest managed state at startup
   asoby brew flappybird.nes                          Download and play a homebrew game
   asoby core install genesis_plus_gx                 Install a libretro core
   asoby config set rewind.buffer_size_mb 64          Set a configuration value
-  asoby state list 'Pokemon Emerald.gba' --core mgba List saved states, filtered"
+  asoby state list 'Pokemon Emerald.gba' --core=mgba List saved states, filtered"
 )]
 struct Args {
     #[command(subcommand)]
@@ -45,19 +45,24 @@ struct Args {
     )]
     version: (),
 
-    #[arg(help = "Path to the ROM file to load")]
+    #[arg(help = "Path to a ROM file; the system is detected automatically")]
     rom: Option<PathBuf>,
 }
 
 #[derive(ClapArgs)]
 struct LaunchArgs {
-    #[arg(short = 'r', long = "renderer", value_enum, help = "Rendering backend")]
+    #[arg(
+        short = 'r',
+        long = "renderer",
+        value_enum,
+        help = "Rendering backend; 'auto' uses kitty graphics when the terminal supports it"
+    )]
     renderer: Option<RendererMode>,
 
     #[arg(
         short = 'c',
         long = "core",
-        help = "Core name or path to a libretro core (.dylib/.so/.dll)"
+        help = "Core name (auto-downloaded if not installed) or path to a libretro core (.dylib/.so/.dll)"
     )]
     core: Option<String>,
 
@@ -65,7 +70,7 @@ struct LaunchArgs {
         short = 'f',
         long = "fps",
         value_parser = clap::value_parser!(u32).range(1..=240),
-        help = "Maximum terminal refresh rate"
+        help = "Cap terminal redraws per second; does not change emulation speed"
     )]
     fps: Option<u32>,
 
@@ -78,7 +83,7 @@ struct LaunchArgs {
         require_equals = true,
         value_parser = clap::value_parser!(bool),
         value_name = "BOOL",
-        help = "Render in the primary terminal buffer, leaving the final frame visible on exit"
+        help = "Render in the main terminal buffer instead of the alternate screen, so the final frame stays visible after exit"
     )]
     primary_screen: Option<bool>,
 
@@ -99,7 +104,7 @@ struct LaunchArgs {
         short = 's',
         long = "state",
         value_name = "PATH",
-        help = "Load a save state file after the core starts"
+        help = "Load a save state file when the game starts"
     )]
     state: Option<PathBuf>,
 
@@ -113,7 +118,7 @@ struct LaunchArgs {
         value_parser = clap::value_parser!(bool),
         value_name = "BOOL",
         conflicts_with = "state",
-        help = "Load the latest managed save state after the core starts"
+        help = "Load the latest managed save state when the game starts"
     )]
     resume: Option<bool>,
 }
@@ -122,6 +127,7 @@ struct LaunchArgs {
 enum Command {
     #[command(
         about = "Manage configuration",
+        visible_alias = "cfg",
         disable_help_subcommand = true,
         after_help = "Examples:
   asoby config list                         List supported keys and effective values
@@ -138,6 +144,7 @@ enum Command {
     },
     #[command(
         about = "Manage libretro cores",
+        visible_alias = "c",
         disable_help_subcommand = true,
         after_help = "Examples:
   asoby core list                List installed cores
@@ -151,11 +158,12 @@ enum Command {
     },
     #[command(
         about = "Manage save states",
+        visible_alias = "s",
         disable_help_subcommand = true,
         after_help = "Examples:
   asoby state list                                      List every managed save state
   asoby state list 'Pokemon Emerald.gba'                Filter by ROM filename
-  asoby state list 'Pokemon Emerald.gba' --core mgba    Filter by ROM and core"
+  asoby state list 'Pokemon Emerald.gba' --core=mgba    Filter by ROM and core"
     )]
     State {
         #[command(subcommand)]
@@ -163,6 +171,7 @@ enum Command {
     },
     #[command(
         about = "Download and play a Retrobrews homebrew game",
+        visible_alias = "b",
         arg_required_else_help = true,
         after_help = "Downloads a supported Retrobrews homebrew ROM on first use and reuses it from the local cache thereafter.
 
@@ -170,8 +179,8 @@ Supported extensions: .gbc, .rom, .nes, .sms, .gba, .sfc, .d64, .tap.
 
 Examples:
   asoby brew flappybird.nes
-  asoby brew pacrun.gba --renderer ascii
-  asoby brew blt.sfc --core snes9x"
+  asoby brew pacrun.gba --renderer=ascii
+  asoby brew blt.sfc --core=snes9x"
     )]
     Brew {
         #[arg(help = "Homebrew ROM filename, including its extension")]
@@ -183,37 +192,52 @@ Examples:
 
 #[derive(Subcommand)]
 enum ConfigAction {
-    #[command(about = "List supported configuration keys and effective values")]
+    #[command(
+        about = "List supported configuration keys and effective values",
+        visible_alias = "l"
+    )]
     List,
-    #[command(about = "Open the configuration file in an editor")]
+    #[command(
+        about = "Open the configuration file in an editor",
+        visible_alias = "e"
+    )]
     Edit,
-    #[command(about = "Print the effective value of a configuration key")]
+    #[command(
+        about = "Print the effective value of a configuration key",
+        visible_alias = "g"
+    )]
     Get { key: String },
-    #[command(about = "Set a configuration override")]
+    #[command(about = "Set a configuration override", visible_alias = "s")]
     Set {
         key: String,
         #[arg(allow_hyphen_values = true)]
         value: String,
     },
-    #[command(about = "Remove a configuration override")]
+    #[command(about = "Remove a configuration override", visible_alias = "u")]
     Unset { key: String },
 }
 
 #[derive(Subcommand)]
 enum CoreAction {
-    #[command(about = "List installed cores")]
+    #[command(about = "List installed cores", visible_alias = "l")]
     List,
-    #[command(about = "Install a core from buildbot.libretro.com")]
+    #[command(
+        about = "Install a core from buildbot.libretro.com",
+        visible_alias = "i"
+    )]
     Install { name: String },
-    #[command(about = "Update installed cores from buildbot.libretro.com")]
+    #[command(
+        about = "Update one core or all installed cores from buildbot.libretro.com",
+        visible_alias = "u"
+    )]
     Update { name: Option<String> },
-    #[command(about = "Remove an installed core")]
+    #[command(about = "Remove an installed core", visible_alias = "rm")]
     Remove { name: String },
 }
 
 #[derive(Subcommand)]
 enum StateAction {
-    #[command(about = "List managed save states")]
+    #[command(about = "List managed save states (filter by ROM and core)", visible_alias = "l")]
     List {
         #[arg(help = "Filter by the complete ROM filename")]
         rom: Option<String>,

@@ -138,8 +138,8 @@ fn help_shows_examples() {
 
     assert!(stdout.contains("Examples:"));
     assert!(stdout.contains("asoby 'Streets of Rage 2.md'"));
-    assert!(stdout.contains("asoby 'Super Metroid.sfc' --state ~/backup.state"));
-    assert!(stdout.contains("asoby state list 'Pokemon Emerald.gba' --core mgba"));
+    assert!(stdout.contains("asoby 'Super Metroid.sfc' --state=~/backup.state"));
+    assert!(stdout.contains("asoby state list 'Pokemon Emerald.gba' --core=mgba"));
     assert!(stdout.contains("asoby core install genesis_plus_gx"));
 }
 
@@ -166,15 +166,15 @@ fn subcommand_help_shows_examples() {
             &["state", "--help"],
             &[
                 "asoby state list",
-                "asoby state list 'Pokemon Emerald.gba' --core mgba",
+                "asoby state list 'Pokemon Emerald.gba' --core=mgba",
             ],
         ),
         (
             &["brew", "--help"],
             &[
                 "asoby brew flappybird.nes",
-                "asoby brew pacrun.gba --renderer ascii",
-                "asoby brew blt.sfc --core snes9x",
+                "asoby brew pacrun.gba --renderer=ascii",
+                "asoby brew blt.sfc --core=snes9x",
             ],
         ),
     ] {

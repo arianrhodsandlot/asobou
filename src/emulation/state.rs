@@ -64,17 +64,11 @@ impl fmt::Display for Timestamp {
 #[derive(Debug)]
 pub enum StateError {
     Io(io::Error),
-    ReadDir {
-        path: PathBuf,
-        source: io::Error,
-    },
+    ReadDir { path: PathBuf, source: io::Error },
     NotAState,
     UnsupportedVersion(u8),
     Truncated,
-    TooLarge {
-        size: usize,
-        max: usize,
-    },
+    TooLarge { size: usize, max: usize },
     SerializationFailed,
     UnserializationFailed,
 }
@@ -123,13 +117,6 @@ impl std::error::Error for StateError {
     }
 }
 
-pub fn states_dir() -> PathBuf {
-    let data_home = std::env::var("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs::data_local_dir().unwrap());
-    data_home.join("asoby").join("states")
-}
-
 pub fn core_name_from_path(path: &Path) -> String {
     path.file_name()
         .map(|name| core_name_from_file_name(&name.to_string_lossy()))
@@ -148,13 +135,14 @@ fn core_name_from_file_name(name: &str) -> String {
 }
 
 pub fn save_state(
+    states_dir: &Path,
     backend: &dyn StateBackend,
     state_size: usize,
     core: &str,
     game: &str,
 ) -> Result<PathBuf, StateError> {
     save_state_in(
-        &states_dir(),
+        states_dir,
         backend,
         state_size,
         core,
@@ -216,11 +204,12 @@ fn read_state_file(path: &Path) -> Result<Vec<u8>, StateError> {
 }
 
 pub fn load_newest(
+    states_dir: &Path,
     backend: &dyn StateBackend,
     core: &str,
     game: &str,
 ) -> Result<Option<PathBuf>, StateError> {
-    load_newest_in(&states_dir(), backend, core, game)
+    load_newest_in(states_dir, backend, core, game)
 }
 
 fn load_newest_in(
@@ -335,8 +324,8 @@ pub struct StateList {
     pub malformed: Vec<MalformedState>,
 }
 
-pub fn list_states() -> Result<StateList, StateError> {
-    list_states_in(&states_dir())
+pub fn list_states(states_dir: &Path) -> Result<StateList, StateError> {
+    list_states_in(states_dir)
 }
 
 fn list_states_in(root: &Path) -> Result<StateList, StateError> {
@@ -602,11 +591,10 @@ fn inflate_chunk(chunk: &[u8], expected: usize) -> Result<Vec<u8>, StateError> {
 }
 
 fn encode(payload: &[u8]) -> Result<Vec<u8>, StateError> {
-    let len =
-        u32::try_from(payload.len()).map_err(|_| StateError::TooLarge {
-            size: payload.len(),
-            max: u32::MAX as usize,
-        })?;
+    let len = u32::try_from(payload.len()).map_err(|_| StateError::TooLarge {
+        size: payload.len(),
+        max: u32::MAX as usize,
+    })?;
     let mut out = Vec::with_capacity(8 + 8 + payload.len().next_multiple_of(8) + 8);
     out.extend_from_slice(b"RASTATE");
     out.push(RASTATE_VERSION);
@@ -1135,7 +1123,10 @@ mod tests {
 
         let bytes = fs::read(&path).unwrap();
         assert!(bytes.starts_with(RZIP_MAGIC));
-        assert_eq!(rzip_unwrap(&bytes).unwrap(), encode(&42u64.to_le_bytes()).unwrap());
+        assert_eq!(
+            rzip_unwrap(&bytes).unwrap(),
+            encode(&42u64.to_le_bytes()).unwrap()
+        );
     }
 
     #[test]
@@ -1245,8 +1236,7 @@ mod tests {
         ));
 
         let mut huge_chunk_size = wrapped.clone();
-        huge_chunk_size[8..12]
-            .copy_from_slice(&(RZIP_MAX_CHUNK_SIZE as u32 + 1).to_le_bytes());
+        huge_chunk_size[8..12].copy_from_slice(&(RZIP_MAX_CHUNK_SIZE as u32 + 1).to_le_bytes());
         assert!(matches!(
             rzip_unwrap(&huge_chunk_size),
             Err(StateError::Truncated)
@@ -1254,14 +1244,14 @@ mod tests {
 
         let mut no_total = wrapped.clone();
         no_total[12..20].copy_from_slice(&0u64.to_le_bytes());
-        assert!(matches!(
-            rzip_unwrap(&no_total),
-            Err(StateError::Truncated)
-        ));
+        assert!(matches!(rzip_unwrap(&no_total), Err(StateError::Truncated)));
 
         let mut oversized = wrapped.clone();
         oversized[12..20].copy_from_slice(&(MAX_RZIP_CONTENT as u64 + 1).to_le_bytes());
-        assert!(matches!(rzip_unwrap(&oversized), Err(StateError::TooLarge { .. })));
+        assert!(matches!(
+            rzip_unwrap(&oversized),
+            Err(StateError::TooLarge { .. })
+        ));
     }
 
     #[test]
@@ -1407,8 +1397,14 @@ mod tests {
     #[test]
     fn parse_state_rejects_every_other_format() {
         assert!(matches!(parse_state(&[]), Err(StateError::NotAState)));
-        assert!(matches!(parse_state(b"RASTATE"), Err(StateError::NotAState)));
-        assert!(matches!(parse_state(b"JARO...."), Err(StateError::NotAState)));
+        assert!(matches!(
+            parse_state(b"RASTATE"),
+            Err(StateError::NotAState)
+        ));
+        assert!(matches!(
+            parse_state(b"JARO...."),
+            Err(StateError::NotAState)
+        ));
         // RZIP-compressed RetroArch states are treated as unknown formats.
         assert!(matches!(
             parse_state(b"#RZIPv\x01#........"),

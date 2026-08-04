@@ -4,8 +4,9 @@ use std::path::Path;
 pub fn list(
     rom_filter: Option<&str>,
     core_filter: Option<&str>,
+    states_dir: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let list = crate::emulation::state::list_states()?;
+    let list = crate::emulation::state::list_states(states_dir)?;
     let entries: Vec<_> = list
         .entries
         .into_iter()

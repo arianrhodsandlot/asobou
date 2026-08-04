@@ -153,6 +153,8 @@ pub struct RunConfig {
     pub primary_screen: bool,
     pub muted: bool,
     pub rom: PathBuf,
+    pub cores_dir: PathBuf,
+    pub states_dir: PathBuf,
     pub input_bindings: crate::input::InputBindings,
     pub rewind: crate::config::RewindSettings,
     pub status: crate::config::StatusSettings,
@@ -298,6 +300,8 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         primary_screen,
         muted,
         rom,
+        cores_dir,
+        states_dir,
         input_bindings,
         rewind: rewind_settings,
         status: status_settings,
@@ -317,7 +321,6 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
     RUNNING.store(true, Ordering::SeqCst);
     crate::emulation::libretro::set_joypad_buttons(0);
 
-    let cores_dir = crate::cores::cores_dir();
     std::fs::create_dir_all(&cores_dir).ok();
 
     let core_path = match resolve_core(
@@ -402,7 +405,8 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         } else if resume && serialization_supported {
-            let _ = crate::emulation::state::load_newest(&core, &core_name, &game_name);
+            let _ =
+                crate::emulation::state::load_newest(&states_dir, &core, &core_name, &game_name);
         }
 
         let mut av_info: crate::emulation::libretro::RetroSystemAvInfo = mem::zeroed();
@@ -532,14 +536,23 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             if serialization_supported {
                 if input.take_save() {
                     match crate::emulation::state::save_state(
-                        &core, state_size, &core_name, &game_name,
+                        &states_dir,
+                        &core,
+                        state_size,
+                        &core_name,
+                        &game_name,
                     ) {
                         Ok(_) => set_message("State saved"),
                         Err(error) => set_message(&format!("Save failed: {error}")),
                     }
                 }
                 if input.take_load() {
-                    match crate::emulation::state::load_newest(&core, &core_name, &game_name) {
+                    match crate::emulation::state::load_newest(
+                        &states_dir,
+                        &core,
+                        &core_name,
+                        &game_name,
+                    ) {
                         Ok(Some(_)) => set_message("State loaded"),
                         Ok(None) => set_message("No save state found"),
                         Err(error) => set_message(&format!("Load failed: {error}")),
@@ -619,7 +632,13 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         drop(terminal);
 
         if serialization_supported && save_on_exit {
-            match crate::emulation::state::save_state(&core, state_size, &core_name, &game_name) {
+            match crate::emulation::state::save_state(
+                &states_dir,
+                &core,
+                state_size,
+                &core_name,
+                &game_name,
+            ) {
                 Ok(path) => println!("Saved state: {}", path.display()),
                 Err(error) => eprintln!("Warning: failed to save state on exit: {error}"),
             }

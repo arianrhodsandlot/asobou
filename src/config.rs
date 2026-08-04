@@ -17,6 +17,14 @@ struct Config {
     rewind: RewindConfig,
     state: StateConfig,
     status: StatusConfig,
+    paths: PathsConfig,
+}
+
+#[derive(Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct PathsConfig {
+    data_dir: Option<String>,
+    cache_dir: Option<String>,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -118,6 +126,12 @@ pub struct RewindSettings {
     pub buffer_size: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PathSettings {
+    pub data_dir: Option<String>,
+    pub cache_dir: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct Settings {
     pub input_bindings: crate::input::InputBindings,
@@ -126,6 +140,7 @@ pub struct Settings {
     pub rewind: RewindSettings,
     pub state: StateSettings,
     pub status: StatusSettings,
+    pub paths: PathSettings,
 }
 
 #[derive(Clone, Deserialize)]
@@ -367,6 +382,7 @@ fn parse_config(contents: &str, path: &Path) -> Result<Config, ConfigError> {
 fn settings_from_config(config: Config, path: &Path) -> Result<Settings, ConfigError> {
     validate_display(&config.display, path)?;
     validate_rewind(&config.rewind, path)?;
+    validate_paths(&config.paths, path)?;
     let display = DisplaySettings {
         renderer: config.display.renderer,
         fps: config.display.fps,
@@ -438,6 +454,10 @@ fn settings_from_config(config: Config, path: &Path) -> Result<Settings, ConfigE
             enabled: config.status.enabled,
             gamepad: config.status.gamepad,
             controls: config.status.controls,
+        },
+        paths: PathSettings {
+            data_dir: config.paths.data_dir,
+            cache_dir: config.paths.cache_dir,
         },
     })
 }
@@ -647,6 +667,28 @@ const CONFIG_KEYS: &[ConfigKey] = &[
         name: "status.controls",
         kind: ConfigValueKind::Boolean,
         value: |config| Some(ConfigValue::Boolean(config.status.controls)),
+    },
+    ConfigKey {
+        name: "paths.data_dir",
+        kind: ConfigValueKind::String,
+        value: |config| {
+            Some(ConfigValue::String(
+                crate::paths::data_base(config.paths.data_dir.as_deref())
+                    .to_string_lossy()
+                    .into_owned(),
+            ))
+        },
+    },
+    ConfigKey {
+        name: "paths.cache_dir",
+        kind: ConfigValueKind::String,
+        value: |config| {
+            Some(ConfigValue::String(
+                crate::paths::cache_base(config.paths.cache_dir.as_deref())
+                    .to_string_lossy()
+                    .into_owned(),
+            ))
+        },
     },
 ];
 
@@ -919,6 +961,34 @@ fn validate_display(display: &DisplayConfig, path: &Path) -> Result<(), ConfigEr
     Ok(())
 }
 
+fn is_absolute_or_tilde(value: &str) -> bool {
+    value == "~" || value.starts_with("~/") || Path::new(value).is_absolute()
+}
+
+fn validate_paths(paths: &PathsConfig, path: &Path) -> Result<(), ConfigError> {
+    for (name, value) in [
+        ("data_dir", paths.data_dir.as_deref()),
+        ("cache_dir", paths.cache_dir.as_deref()),
+    ] {
+        let Some(value) = value else {
+            continue;
+        };
+        if value.is_empty() {
+            return Err(ConfigError::Invalid {
+                path: path.to_path_buf(),
+                reason: format!("[paths] {name} must not be empty"),
+            });
+        }
+        if !is_absolute_or_tilde(value) {
+            return Err(ConfigError::Invalid {
+                path: path.to_path_buf(),
+                reason: format!("[paths] {name} must be an absolute path or start with \"~/\""),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_rewind(rewind: &RewindConfig, path: &Path) -> Result<(), ConfigError> {
     if rewind.granularity == 0 {
         return Err(ConfigError::Invalid {
@@ -1187,5 +1257,77 @@ mod tests {
             parse_settings("[state]\nprune = true\n", Path::new("config.toml")).unwrap_err();
 
         assert!(error.to_string().contains("prune"));
+    }
+
+    #[test]
+    fn paths_settings_default_to_unset() {
+        let settings = parse_settings("", Path::new("config.toml")).unwrap();
+
+        assert_eq!(
+            settings.paths,
+            PathSettings {
+                data_dir: None,
+                cache_dir: None
+            }
+        );
+    }
+
+    #[test]
+    fn paths_settings_carry_raw_configured_values() {
+        let settings = parse_settings(
+            "[paths]\ndata_dir = \"/custom/data\"\ncache_dir = \"~/cache\"\n",
+            Path::new("config.toml"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            settings.paths,
+            PathSettings {
+                data_dir: Some("/custom/data".into()),
+                cache_dir: Some("~/cache".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn relative_paths_values_are_rejected() {
+        for value in ["relative", "~user/data", "./data"] {
+            let error = parse_settings(
+                &format!("[paths]\ndata_dir = \"{value}\"\n"),
+                Path::new("config.toml"),
+            )
+            .unwrap_err();
+
+            assert!(error.to_string().contains("absolute"), "{value}: {error}");
+        }
+    }
+
+    #[test]
+    fn empty_path_values_are_rejected() {
+        let error =
+            parse_settings("[paths]\ncache_dir = \"\"\n", Path::new("config.toml")).unwrap_err();
+
+        assert!(error.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn absolute_and_tilde_path_values_are_accepted() {
+        for value in ["/custom/data", "~", "~/games"] {
+            let settings = parse_settings(
+                &format!("[paths]\ndata_dir = \"{value}\"\n"),
+                Path::new("config.toml"),
+            )
+            .unwrap();
+
+            assert_eq!(settings.paths.data_dir.as_deref(), Some(value));
+        }
+    }
+
+    #[test]
+    fn unknown_paths_config_fields_are_rejected() {
+        let error = parse_settings("[paths]\nsaves_dir = \"/tmp\"\n", Path::new("config.toml"))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("saves_dir"));
     }
 }

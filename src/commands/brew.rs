@@ -44,15 +44,14 @@ const SOURCES: &[Source] = &[
     },
 ];
 
-pub fn download(game: &str) -> Result<PathBuf, String> {
+pub fn download(game: &str, cache_dir: &Path) -> Result<PathBuf, String> {
     let source = source_for(game)?;
-    let cache_dir = cache_dir()?;
-    if let Some(cached) = cached_rom(&cache_dir, game) {
+    if let Some(cached) = cached_rom(cache_dir, game) {
         return Ok(cached);
     }
     let cached = cache_dir.join(game);
 
-    std::fs::create_dir_all(&cache_dir).map_err(|error| {
+    std::fs::create_dir_all(cache_dir).map_err(|error| {
         format!(
             "Could not create cache directory {}: {error}",
             cache_dir.display()
@@ -108,23 +107,6 @@ pub fn download(game: &str) -> Result<PathBuf, String> {
         Err(_error) if cached.is_file() => Ok(cached),
         Err(error) => Err(format!("Could not save downloaded ROM: {}", error.error)),
     }
-}
-
-fn cache_dir() -> Result<PathBuf, String> {
-    cache_dir_from(
-        std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from),
-        dirs::cache_dir(),
-    )
-}
-
-fn cache_dir_from(
-    cache_home: Option<PathBuf>,
-    platform_cache: Option<PathBuf>,
-) -> Result<PathBuf, String> {
-    cache_home
-        .or(platform_cache)
-        .map(|base| base.join("asoby").join("brew"))
-        .ok_or_else(|| "Could not determine a cache directory".to_string())
 }
 
 fn cached_rom(cache_dir: &Path, game: &str) -> Option<PathBuf> {
@@ -213,21 +195,6 @@ mod tests {
             source_url(source, "my game.nes"),
             "https://raw.githubusercontent.com/retrobrews/nes-games/refs/heads/master/my%20game.nes"
         );
-    }
-
-    #[test]
-    fn cache_directory_uses_xdg_cache_home() {
-        let directory =
-            cache_dir_from(Some(PathBuf::from("/cache")), Some(PathBuf::from("/other"))).unwrap();
-
-        assert_eq!(directory, PathBuf::from("/cache/asoby/brew"));
-    }
-
-    #[test]
-    fn cache_directory_uses_platform_cache_when_xdg_is_unset() {
-        let directory = cache_dir_from(None, Some(PathBuf::from("/cache"))).unwrap();
-
-        assert_eq!(directory, PathBuf::from("/cache/asoby/brew"));
     }
 
     #[test]

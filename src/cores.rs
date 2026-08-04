@@ -33,13 +33,6 @@ pub fn buildbot_base_url() -> Option<&'static str> {
     }
 }
 
-pub fn cores_dir() -> PathBuf {
-    let data_home = std::env::var("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs::data_local_dir().unwrap());
-    data_home.join("asoby").join("cores")
-}
-
 pub fn http_agent() -> ureq::Agent {
     ureq::config::Config::builder()
         .timeout_global(Some(std::time::Duration::from_secs(300)))

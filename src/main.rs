@@ -4,6 +4,7 @@ mod config;
 mod cores;
 mod emulation;
 mod input;
+mod paths;
 mod renderer;
 
 use clap::{Args as ClapArgs, FromArgMatches, Parser, Subcommand};
@@ -241,23 +242,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             return Ok(());
         }
-        Some(Command::Core { action }) => match action {
-            CoreAction::List => {
-                commands::core::list();
-                return Ok(());
+        Some(Command::Core { action }) => {
+            let settings = load_settings();
+            let cores_dir = paths::cores_dir(settings.paths.data_dir.as_deref());
+            match action {
+                CoreAction::List => {
+                    commands::core::list(&cores_dir);
+                    return Ok(());
+                }
+                CoreAction::Install { name } => return commands::core::install(&name, &cores_dir),
+                CoreAction::Update { name } => {
+                    return commands::core::update(name.as_deref(), &cores_dir);
+                }
+                CoreAction::Remove { name } => return commands::core::remove(&name, &cores_dir),
             }
-            CoreAction::Install { name } => return commands::core::install(&name),
-            CoreAction::Update { name } => return commands::core::update(name.as_deref()),
-            CoreAction::Remove { name } => return commands::core::remove(&name),
-        },
+        }
         Some(Command::State { action }) => match action {
             StateAction::List { rom, core } => {
-                return commands::state::list(rom.as_deref(), core.as_deref());
+                let settings = load_settings();
+                let states_dir = paths::states_dir(settings.paths.data_dir.as_deref());
+                return commands::state::list(rom.as_deref(), core.as_deref(), &states_dir);
             }
         },
         Some(Command::Brew { game, launch }) => {
-            let rom = commands::brew::download(&game).map_err(std::io::Error::other)?;
-            return commands::run::run(run_config(launch, rom));
+            let settings = load_settings();
+            let cache_dir = paths::brew_cache_dir(settings.paths.cache_dir.as_deref());
+            let rom = commands::brew::download(&game, &cache_dir).map_err(std::io::Error::other)?;
+            return commands::run::run(run_config(launch, rom, settings));
         }
         None => {}
     }
@@ -267,17 +278,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
 
-    commands::run::run(run_config(args.launch, rom))
+    commands::run::run(run_config(args.launch, rom, load_settings()))
 }
 
-fn run_config(launch: LaunchArgs, rom: PathBuf) -> RunConfig {
-    let settings = match config::load_settings() {
+fn load_settings() -> config::Settings {
+    match config::load_settings() {
         Ok(settings) => settings,
         Err(error) => {
             eprintln!("Error: {error}");
             std::process::exit(1);
         }
-    };
+    }
+}
+
+fn run_config(launch: LaunchArgs, rom: PathBuf, settings: config::Settings) -> RunConfig {
     RunConfig {
         renderer: launch.renderer.unwrap_or(settings.display.renderer),
         core: launch.core,
@@ -287,6 +301,8 @@ fn run_config(launch: LaunchArgs, rom: PathBuf) -> RunConfig {
             .unwrap_or(settings.display.primary_screen),
         muted: launch.muted.unwrap_or(settings.audio.muted),
         rom,
+        cores_dir: paths::cores_dir(settings.paths.data_dir.as_deref()),
+        states_dir: paths::states_dir(settings.paths.data_dir.as_deref()),
         input_bindings: settings.input_bindings,
         rewind: settings.rewind,
         status: settings.status,

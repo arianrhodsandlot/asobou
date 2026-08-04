@@ -6,11 +6,14 @@ fn run(args: &[&str]) -> (String, String, i32) {
 }
 
 // Point the binary at an isolated data dir so tests never touch the real
-// user cores dir (~/Library/Application Support/asoby/cores).
+// user cores dir (~/Library/Application Support/asoby/cores). The config
+// path is also isolated: a missing file means defaults, so a real config
+// with [paths] overrides cannot leak into these tests.
 fn run_in(data_home: Option<&Path>, args: &[&str]) -> (String, String, i32) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_asoby"));
     if let Some(dir) = data_home {
-        cmd.env("XDG_DATA_HOME", dir);
+        cmd.env("XDG_DATA_HOME", dir)
+            .env("ASOBY_CONFIG", dir.join("no-config.toml"));
     }
     let output = cmd.args(args).output().expect("failed to run asoby");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -22,6 +25,27 @@ fn run_in(data_home: Option<&Path>, args: &[&str]) -> (String, String, i32) {
 fn run_with_config(config: &Path, args: &[&str]) -> (String, String, i32) {
     let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
         .env("ASOBY_CONFIG", config)
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_CACHE_HOME")
+        .args(args)
+        .output()
+        .expect("failed to run asoby");
+    (
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+        output.status.code().unwrap_or(-1),
+    )
+}
+
+fn run_with_config_env(
+    config: &Path,
+    xdg_data_home: &Path,
+    args: &[&str],
+) -> (String, String, i32) {
+    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
+        .env("ASOBY_CONFIG", config)
+        .env("XDG_DATA_HOME", xdg_data_home)
+        .env_remove("XDG_CACHE_HOME")
         .args(args)
         .output()
         .expect("failed to run asoby");
@@ -420,6 +444,7 @@ fn state_list_shortens_home_paths_with_tilde() {
     );
     let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
         .env("XDG_DATA_HOME", &data)
+        .env("ASOBY_CONFIG", data.join("no-config.toml"))
         .env("HOME", home.path())
         .args(["state", "list"])
         .output()
@@ -485,7 +510,7 @@ fn config_list_shows_supported_keys_values_and_sources() {
 
     assert_eq!(code, 0, "{stderr}");
     assert!(stdout.starts_with("KEY"));
-    assert_eq!(stdout.lines().count(), 33);
+    assert_eq!(stdout.lines().count(), 35);
     let configured = stdout
         .lines()
         .find(|line| line.starts_with("rewind.enabled"))
@@ -792,4 +817,114 @@ fn config_edit_reports_editor_failure() {
 
     assert_ne!(output.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&output.stderr).contains("exited unsuccessfully"));
+}
+
+#[test]
+fn config_get_paths_data_dir_uses_config_value() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+    std::fs::write(&config, "[paths]\ndata_dir = \"/custom/data\"\n").unwrap();
+
+    let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "paths.data_dir"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "/custom/data\n");
+}
+
+#[test]
+fn config_get_paths_data_dir_expands_tilde() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+    std::fs::write(&config, "[paths]\ndata_dir = \"~/asoby-data\"\n").unwrap();
+
+    let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "paths.data_dir"]);
+    assert_eq!(code, 0, "{stderr}");
+    let home = dirs::home_dir().unwrap();
+    assert_eq!(stdout, format!("{}\n", home.join("asoby-data").display()));
+}
+
+#[test]
+fn config_get_paths_data_dir_wins_over_xdg_env() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+    std::fs::write(&config, "[paths]\ndata_dir = \"/custom/data\"\n").unwrap();
+    let xdg = tempfile::tempdir().unwrap();
+
+    let (stdout, stderr, code) =
+        run_with_config_env(&config, xdg.path(), &["config", "get", "paths.data_dir"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "/custom/data\n");
+}
+
+#[test]
+fn config_get_paths_data_dir_uses_xdg_env_when_unset() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("missing").join("config.toml");
+    let xdg = tempfile::tempdir().unwrap();
+
+    let (stdout, stderr, code) =
+        run_with_config_env(&config, xdg.path(), &["config", "get", "paths.data_dir"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, format!("{}\n", xdg.path().join("asoby").display()));
+}
+
+#[test]
+fn config_set_paths_data_dir_stores_raw_and_reports_effective() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+
+    let (stdout, stderr, code) = run_with_config(
+        &config,
+        &["config", "set", "paths.data_dir", "~/asoby-data"],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    let home = dirs::home_dir().unwrap();
+    assert_eq!(
+        stdout,
+        format!("paths.data_dir = {}\n", home.join("asoby-data").display())
+    );
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "[paths]\ndata_dir = \"~/asoby-data\"\n"
+    );
+
+    let (stdout, stderr, code) = run_with_config(&config, &["config", "unset", "paths.data_dir"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_ne!(stdout, "paths.data_dir = <unset>\n");
+}
+
+#[test]
+fn config_set_paths_data_dir_rejects_relative_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+
+    let (stdout, stderr, code) =
+        run_with_config(&config, &["config", "set", "paths.data_dir", "relative"]);
+    assert_ne!(code, 0);
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("absolute"), "{stderr}");
+    assert!(!config.exists());
+}
+
+#[test]
+fn state_list_uses_configured_data_dir() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+    let data = directory.path().join("custom-data");
+    std::fs::write(
+        &config,
+        format!("[paths]\ndata_dir = \"{}\"\n", data.display()),
+    )
+    .unwrap();
+    let path = data
+        .join("states")
+        .join("fceumm")
+        .join("game.nes")
+        .join("game.nes.20260802T151205.903+0800.state");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"not a real state").unwrap();
+
+    let (stdout, stderr, code) = run_with_config(&config, &["state", "list"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("game.nes"), "{stdout}");
+    assert!(stdout.contains("fceumm"), "{stdout}");
 }

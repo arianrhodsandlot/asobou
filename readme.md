@@ -95,7 +95,21 @@ buffer_size_mb = 20     # Memory cap for stored snapshots
 
 [state]
 save_on_exit = false    # Save a state when exiting cleanly
+
+[paths]
+# data_dir = "~/asoby-data"    # Override the data base (cores, save states)
+# cache_dir = "~/asoby-cache"  # Override the cache base (brew downloads)
 ```
+
+Data lives in `$XDG_DATA_HOME/asoby` and cache in `$XDG_CACHE_HOME/asoby` by
+default (`~/Library/Application Support/asoby` and `~/Library/Caches/asoby` on
+macOS, `~/.local/share/asoby` and `~/.cache/asoby` on Linux). `paths.data_dir`
+and `paths.cache_dir` override the base directory: cores and save states go
+under `data_dir/cores` and `data_dir/states`, brew downloads under
+`cache_dir/brew`. Values must be absolute or start with `~/`. These settings
+take precedence over the `XDG_DATA_HOME` and `XDG_CACHE_HOME` environment
+variables, which are used only when the corresponding key is unset (an empty
+variable counts as unset).
 
 Rewind steps back while the rewind key is held. A higher `granularity` uses
 less memory and CPU but rewinds in coarser steps; once `buffer_size_mb` is

@@ -1,6 +1,11 @@
 use std::path::Path;
 use std::process::Command;
 
+#[cfg(windows)]
+const ABSOLUTE_DATA_DIR: &str = r"C:\custom\data";
+#[cfg(not(windows))]
+const ABSOLUTE_DATA_DIR: &str = "/custom/data";
+
 fn run(args: &[&str]) -> (String, String, i32) {
     run_in(None, args)
 }
@@ -823,11 +828,15 @@ fn config_edit_reports_editor_failure() {
 fn config_get_paths_data_dir_uses_config_value() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("config.toml");
-    std::fs::write(&config, "[paths]\ndata_dir = \"/custom/data\"\n").unwrap();
+    std::fs::write(
+        &config,
+        format!("[paths]\ndata_dir = '{ABSOLUTE_DATA_DIR}'\n"),
+    )
+    .unwrap();
 
     let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "paths.data_dir"]);
     assert_eq!(code, 0, "{stderr}");
-    assert_eq!(stdout, "/custom/data\n");
+    assert_eq!(stdout, format!("{ABSOLUTE_DATA_DIR}\n"));
 }
 
 #[test]
@@ -846,13 +855,17 @@ fn config_get_paths_data_dir_expands_tilde() {
 fn config_get_paths_data_dir_wins_over_xdg_env() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("config.toml");
-    std::fs::write(&config, "[paths]\ndata_dir = \"/custom/data\"\n").unwrap();
+    std::fs::write(
+        &config,
+        format!("[paths]\ndata_dir = '{ABSOLUTE_DATA_DIR}'\n"),
+    )
+    .unwrap();
     let xdg = tempfile::tempdir().unwrap();
 
     let (stdout, stderr, code) =
         run_with_config_env(&config, xdg.path(), &["config", "get", "paths.data_dir"]);
     assert_eq!(code, 0, "{stderr}");
-    assert_eq!(stdout, "/custom/data\n");
+    assert_eq!(stdout, format!("{ABSOLUTE_DATA_DIR}\n"));
 }
 
 #[test]
@@ -912,7 +925,7 @@ fn state_list_uses_configured_data_dir() {
     let data = directory.path().join("custom-data");
     std::fs::write(
         &config,
-        format!("[paths]\ndata_dir = \"{}\"\n", data.display()),
+        format!("[paths]\ndata_dir = '{}'\n", data.display()),
     )
     .unwrap();
     let path = data

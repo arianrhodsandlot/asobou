@@ -1,33 +1,30 @@
-name: Release
-
+name: release
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
-
+      - "v[0-9]+.[0-9]+.[0-9]+"
 permissions:
   contents: write
-
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
           - os: macos-15-intel
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            extension: ".exe"
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            extension: '.exe'
-
+            extension: ".exe"
     steps:
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install libasound2-dev pkg-config
@@ -46,8 +43,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.target }}
-          path: 'release/*'
-
+          path: "release/*"
   release:
     needs: build
     runs-on: ubuntu-latest

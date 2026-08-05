@@ -15,7 +15,7 @@ renderer your terminal supports, and starts the game.
 
 Coming soon.
 
-## Installation (WIP, following contents are not yet available)
+## Installation
 
 - You do not necessarily need to install it if you just want a quick try.
 

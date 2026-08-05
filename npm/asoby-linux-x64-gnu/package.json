@@ -1,0 +1,16 @@
+{
+  "name": "asoby-linux-x64-gnu",
+  "version": "0.0.0",
+  "description": "Platform binary for asoby on Linux x64 with glibc",
+  "license": "MIT",
+  "repository": "https://github.com/arianrhodsandlot/asoby",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}

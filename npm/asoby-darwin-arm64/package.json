@@ -1,0 +1,13 @@
+{
+  "name": "asoby-darwin-arm64",
+  "version": "0.0.0",
+  "description": "Platform binary for asoby on macOS arm64",
+  "license": "MIT",
+  "repository": "https://github.com/arianrhodsandlot/asoby",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}

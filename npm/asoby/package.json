@@ -1,0 +1,25 @@
+{
+  "name": "asoby",
+  "version": "0.0.0",
+  "description": "Play retro games directly in your terminal",
+  "homepage": "https://github.com/arianrhodsandlot/asoby",
+  "license": "MIT",
+  "repository": "https://github.com/arianrhodsandlot/asoby",
+  "bin": {
+    "asoby": "bin/asoby.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "optionalDependencies": {
+    "asoby-darwin-arm64": "0.0.0",
+    "asoby-darwin-x64": "0.0.0",
+    "asoby-linux-arm64-gnu": "0.0.0",
+    "asoby-linux-x64-gnu": "0.0.0",
+    "asoby-win32-arm64-msvc": "0.0.0",
+    "asoby-win32-x64-msvc": "0.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

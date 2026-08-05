@@ -1,0 +1,13 @@
+{
+  "name": "asoby-win32-x64-msvc",
+  "version": "0.0.0",
+  "description": "Platform binary for asoby on Windows x64 with MSVC",
+  "license": "MIT",
+  "repository": "https://github.com/arianrhodsandlot/asoby",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ]
+}

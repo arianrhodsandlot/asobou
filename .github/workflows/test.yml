@@ -4,16 +4,16 @@ on:
     branches:
       - main
     paths-ignore:
-      - '**/*.md'
-      - 'docs/**/*'
+      - "**/*.md"
+      - "docs/**/*"
     tags-ignore:
-      - '*'
+      - "*"
   pull_request:
     branches:
       - main
     paths-ignore:
-      - '**/*.md'
-      - 'docs/**/*'
+      - "**/*.md"
+      - "docs/**/*"
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -28,12 +28,6 @@ jobs:
           - windows-latest
     steps:
       - uses: actions/checkout@v7
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install libasound2-dev pkg-config
-      - uses: jdx/mise-action@v4
-        with:
-          mise_toml: |
-            [tools]
-            rust = 'latest'
+      - uses: ./.github/actions/setup-infrastructure
       - run: cargo test
       - run: cargo build -r

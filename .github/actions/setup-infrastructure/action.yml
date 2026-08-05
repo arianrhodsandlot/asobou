@@ -1,0 +1,15 @@
+name: Setup Infrastructure
+description: Sets up the infrastructure for the project
+runs:
+  using: composite
+  steps:
+    - if: runner.os == 'Linux'
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install libasound2-dev pkg-config
+    - uses: jdx/mise-action@v4
+      with:
+        mise_toml: |
+          [tools]
+          rust = 'latest'
+          yq = 'latest'
+          npm = 'latest'

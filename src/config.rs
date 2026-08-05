@@ -1272,10 +1272,17 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    const ABSOLUTE_DATA_DIR: &str = r"C:\custom\data";
+    #[cfg(not(windows))]
+    const ABSOLUTE_DATA_DIR: &str = "/custom/data";
+
     #[test]
     fn paths_settings_carry_raw_configured_values() {
         let settings = parse_settings(
-            "[paths]\ndata_dir = \"/custom/data\"\ncache_dir = \"~/cache\"\n",
+            &format!(
+                "[paths]\ndata_dir = '{ABSOLUTE_DATA_DIR}'\ncache_dir = '~/cache'\n"
+            ),
             Path::new("config.toml"),
         )
         .unwrap();
@@ -1283,7 +1290,7 @@ mod tests {
         assert_eq!(
             settings.paths,
             PathSettings {
-                data_dir: Some("/custom/data".into()),
+                data_dir: Some(ABSOLUTE_DATA_DIR.into()),
                 cache_dir: Some("~/cache".into()),
             }
         );
@@ -1312,9 +1319,9 @@ mod tests {
 
     #[test]
     fn absolute_and_tilde_path_values_are_accepted() {
-        for value in ["/custom/data", "~", "~/games"] {
+        for value in [ABSOLUTE_DATA_DIR, "~", "~/games"] {
             let settings = parse_settings(
-                &format!("[paths]\ndata_dir = \"{value}\"\n"),
+                &format!("[paths]\ndata_dir = '{value}'\n"),
                 Path::new("config.toml"),
             )
             .unwrap();

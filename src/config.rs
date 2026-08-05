@@ -1280,9 +1280,7 @@ mod tests {
     #[test]
     fn paths_settings_carry_raw_configured_values() {
         let settings = parse_settings(
-            &format!(
-                "[paths]\ndata_dir = '{ABSOLUTE_DATA_DIR}'\ncache_dir = '~/cache'\n"
-            ),
+            &format!("[paths]\ndata_dir = '{ABSOLUTE_DATA_DIR}'\ncache_dir = '~/cache'\n"),
             Path::new("config.toml"),
         )
         .unwrap();

@@ -54,7 +54,7 @@ impl CpalBackend {
 impl AudioBackend for CpalBackend {
     fn preferred_sample_rate(&mut self) -> Result<Option<u32>, String> {
         self.prepare()?;
-        Ok(self.config.as_ref().map(|config| config.sample_rate().0))
+        Ok(self.config.as_ref().map(|config| config.sample_rate()))
     }
 
     fn start(&mut self, source_rate: f64) -> Result<Box<dyn AudioSink + Send>, String> {
@@ -64,36 +64,36 @@ impl AudioBackend for CpalBackend {
         let sample_format = supported_config.sample_format();
         let config: cpal::StreamConfig = supported_config.clone().into();
         let channels = config.channels as usize;
-        let target_rate = config.sample_rate.0;
+        let target_rate = config.sample_rate;
         let ring = HeapRb::<i16>::new(target_rate as usize * 2 / 10);
         let (prod, cons) = ring.split();
         let error_callback = |err| eprintln!("audio stream error: {err}");
         let stream = match sample_format {
-            SampleFormat::I8 => build_stream::<i8>(device, &config, channels, cons, error_callback),
+            SampleFormat::I8 => build_stream::<i8>(device, config, channels, cons, error_callback),
             SampleFormat::I16 => {
-                build_stream::<i16>(device, &config, channels, cons, error_callback)
+                build_stream::<i16>(device, config, channels, cons, error_callback)
             }
             SampleFormat::I32 => {
-                build_stream::<i32>(device, &config, channels, cons, error_callback)
+                build_stream::<i32>(device, config, channels, cons, error_callback)
             }
             SampleFormat::I64 => {
-                build_stream::<i64>(device, &config, channels, cons, error_callback)
+                build_stream::<i64>(device, config, channels, cons, error_callback)
             }
-            SampleFormat::U8 => build_stream::<u8>(device, &config, channels, cons, error_callback),
+            SampleFormat::U8 => build_stream::<u8>(device, config, channels, cons, error_callback),
             SampleFormat::U16 => {
-                build_stream::<u16>(device, &config, channels, cons, error_callback)
+                build_stream::<u16>(device, config, channels, cons, error_callback)
             }
             SampleFormat::U32 => {
-                build_stream::<u32>(device, &config, channels, cons, error_callback)
+                build_stream::<u32>(device, config, channels, cons, error_callback)
             }
             SampleFormat::U64 => {
-                build_stream::<u64>(device, &config, channels, cons, error_callback)
+                build_stream::<u64>(device, config, channels, cons, error_callback)
             }
             SampleFormat::F32 => {
-                build_stream::<f32>(device, &config, channels, cons, error_callback)
+                build_stream::<f32>(device, config, channels, cons, error_callback)
             }
             SampleFormat::F64 => {
-                build_stream::<f64>(device, &config, channels, cons, error_callback)
+                build_stream::<f64>(device, config, channels, cons, error_callback)
             }
             format => return Err(format!("unsupported output sample format: {format}")),
         }
@@ -165,11 +165,11 @@ fn interpolate(start: i16, end: i16, fraction: f64) -> i16 {
 
 fn build_stream<T>(
     device: &cpal::Device,
-    config: &cpal::StreamConfig,
+    config: cpal::StreamConfig,
     channels: usize,
     mut consumer: ringbuf::HeapCons<i16>,
-    error_callback: impl FnMut(cpal::StreamError) + Send + 'static,
-) -> Result<cpal::Stream, cpal::BuildStreamError>
+    error_callback: impl FnMut(cpal::Error) + Send + 'static,
+) -> Result<cpal::Stream, cpal::Error>
 where
     T: SizedSample + Sample + FromSample<i16>,
 {

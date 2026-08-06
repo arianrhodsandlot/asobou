@@ -134,7 +134,20 @@ fn boolean_display_and_audio_flags_accept_bare_and_explicit_values() {
 
     let (_stdout, stderr, code) = run(&["--muted", "not-a-rom"]);
     assert_ne!(code, 2);
-    assert!(stderr.contains("No known system"), "{stderr}");
+    assert!(stderr.contains("file not found"), "{stderr}");
+}
+
+#[test]
+fn missing_zip_reports_file_not_found_before_core_detection() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_stdout, stderr, code) = run_in(Some(dir.path()), &["non-exist.zip"]);
+
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("Error: file not found: non-exist.zip"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("No known system"), "{stderr}");
 }
 
 #[test]

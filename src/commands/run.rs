@@ -317,6 +317,11 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
+    if !rom.exists() {
+        eprintln!("Error: file not found: {}", rom.display());
+        std::process::exit(1);
+    }
+
     ctrlc::set_handler(|| RUNNING.store(false, Ordering::SeqCst))?;
     RUNNING.store(true, Ordering::SeqCst);
     crate::emulation::libretro::set_joypad_buttons(0);
@@ -338,11 +343,6 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
-
-    if !rom.exists() {
-        eprintln!("Error: file not found: {}", rom.display());
-        std::process::exit(1);
-    }
 
     let status_lines = status_lines(&input_bindings, status_settings);
     let renderer =

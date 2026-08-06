@@ -1,9 +1,20 @@
 {
   "name": "asoby-darwin-x64",
-  "version": "0.0.0",
   "description": "Platform binary for asoby on macOS x64",
+  "homepage": "https://github.com/arianrhodsandlot/asoby",
+  "bugs": {
+    "url": "https://github.com/arianrhodsandlot/asoby/issues",
+    "email": "theguidanceofawhitetower@gmail.com"
+  },
   "license": "MIT",
-  "repository": "https://github.com/arianrhodsandlot/asoby",
+  "author": {
+    "name": "arianrhodsandlot",
+    "email": "theguidanceofawhitetower@gmail.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arianrhodsandlot/asoby.git"
+  },
   "os": [
     "darwin"
   ],

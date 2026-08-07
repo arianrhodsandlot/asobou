@@ -1,0 +1,24 @@
+{
+  "name": "asobou-win32-arm64-msvc",
+  "description": "Platform binary for asobou on Windows arm64 with MSVC",
+  "homepage": "https://github.com/arianrhodsandlot/asobou",
+  "bugs": {
+    "url": "https://github.com/arianrhodsandlot/asobou/issues",
+    "email": "theguidanceofawhitetower@gmail.com"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "arianrhodsandlot",
+    "email": "theguidanceofawhitetower@gmail.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arianrhodsandlot/asobou.git"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}

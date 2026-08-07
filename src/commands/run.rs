@@ -130,7 +130,7 @@ fn resolve_core(
                 format!("Multiple cores support \"{default_name}\".\n\nSelect one explicitly:\n");
             for core in &candidates {
                 let rom_path = default_name;
-                msg.push_str(&format!("  asoby {rom_path} --core {core}\n"));
+                msg.push_str(&format!("  asobou {rom_path} --core {core}\n"));
             }
             Err(msg)
         }

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 const RASTATE_VERSION: u8 = 1;
 const TIMESTAMP_LEN: usize = 24;
-const TEMP_PREFIX: &str = ".asoby-state-";
+const TEMP_PREFIX: &str = ".asobou-state-";
 const MAX_STATE_FILE_SIZE: usize = 256 * 1024 * 1024;
 const RZIP_HEADER_SIZE: usize = 20;
 const RZIP_DEFAULT_CHUNK_SIZE: usize = 128 * 1024;
@@ -1516,7 +1516,7 @@ mod tests {
             &backend,
             ts("20260802T151205.903+0800"),
         );
-        fs::write(path.parent().unwrap().join(".asoby-state-abc"), b"x").unwrap();
+        fs::write(path.parent().unwrap().join(".asobou-state-abc"), b"x").unwrap();
         let stray = path.parent().unwrap().join("garbage.bin");
         fs::write(&stray, b"x").unwrap();
 
@@ -1568,7 +1568,7 @@ mod tests {
     #[test]
     fn list_states_propagates_directory_errors() {
         let dir = tempfile::tempdir().unwrap();
-        let states = dir.path().join("asoby").join("states");
+        let states = dir.path().join("asobou").join("states");
         fs::create_dir_all(states.parent().unwrap()).unwrap();
         fs::write(&states, b"not a directory").unwrap();
 

@@ -11,16 +11,16 @@ fn run(args: &[&str]) -> (String, String, i32) {
 }
 
 // Point the binary at an isolated data dir so tests never touch the real
-// user cores dir (~/Library/Application Support/asoby/cores). The config
+// user cores dir (~/Library/Application Support/asobou/cores). The config
 // path is also isolated: a missing file means defaults, so a real config
 // with [paths] overrides cannot leak into these tests.
 fn run_in(data_home: Option<&Path>, args: &[&str]) -> (String, String, i32) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_asoby"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_asobou"));
     if let Some(dir) = data_home {
         cmd.env("XDG_DATA_HOME", dir)
-            .env("ASOBY_CONFIG", dir.join("no-config.toml"));
+            .env("ASOBOU_CONFIG", dir.join("no-config.toml"));
     }
-    let output = cmd.args(args).output().expect("failed to run asoby");
+    let output = cmd.args(args).output().expect("failed to run asobou");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let code = output.status.code().unwrap_or(-1);
@@ -28,13 +28,13 @@ fn run_in(data_home: Option<&Path>, args: &[&str]) -> (String, String, i32) {
 }
 
 fn run_with_config(config: &Path, args: &[&str]) -> (String, String, i32) {
-    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
-        .env("ASOBY_CONFIG", config)
+    let output = Command::new(env!("CARGO_BIN_EXE_asobou"))
+        .env("ASOBOU_CONFIG", config)
         .env_remove("XDG_DATA_HOME")
         .env_remove("XDG_CACHE_HOME")
         .args(args)
         .output()
-        .expect("failed to run asoby");
+        .expect("failed to run asobou");
     (
         String::from_utf8_lossy(&output.stdout).to_string(),
         String::from_utf8_lossy(&output.stderr).to_string(),
@@ -47,13 +47,13 @@ fn run_with_config_env(
     xdg_data_home: &Path,
     args: &[&str],
 ) -> (String, String, i32) {
-    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
-        .env("ASOBY_CONFIG", config)
+    let output = Command::new(env!("CARGO_BIN_EXE_asobou"))
+        .env("ASOBOU_CONFIG", config)
         .env("XDG_DATA_HOME", xdg_data_home)
         .env_remove("XDG_CACHE_HOME")
         .args(args)
         .output()
-        .expect("failed to run asoby");
+        .expect("failed to run asobou");
     (
         String::from_utf8_lossy(&output.stdout).to_string(),
         String::from_utf8_lossy(&output.stderr).to_string(),
@@ -62,7 +62,7 @@ fn run_with_config_env(
 }
 
 fn write_state(data_home: &Path, core: &str, game: &str, name: &str) -> std::path::PathBuf {
-    let dir = data_home.join("asoby").join("states").join(core).join(game);
+    let dir = data_home.join("asobou").join("states").join(core).join(game);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(name);
     // `state list` only inspects filenames, so the contents can be anything.
@@ -75,7 +75,7 @@ fn running_without_rom_shows_help() {
     let (stdout, _stderr, code) = run(&[]);
     assert_eq!(code, 0);
     assert!(stdout.contains("Usage:"));
-    assert!(stdout.contains("asoby"));
+    assert!(stdout.contains("asobou"));
 }
 
 #[test]
@@ -155,10 +155,10 @@ fn help_shows_examples() {
     let (stdout, _stderr, _code) = run(&[]);
 
     assert!(stdout.contains("Examples:"));
-    assert!(stdout.contains("asoby 'Streets of Rage 2.md'"));
-    assert!(stdout.contains("asoby 'Super Metroid.sfc' --state=~/backup.state"));
-    assert!(stdout.contains("asoby state list 'Pokemon Emerald.gba' --core=mgba"));
-    assert!(stdout.contains("asoby core install genesis_plus_gx"));
+    assert!(stdout.contains("asobou 'Streets of Rage 2.md'"));
+    assert!(stdout.contains("asobou 'Super Metroid.sfc' --state=~/backup.state"));
+    assert!(stdout.contains("asobou state list 'Pokemon Emerald.gba' --core=mgba"));
+    assert!(stdout.contains("asobou core install genesis_plus_gx"));
 }
 
 #[test]
@@ -166,33 +166,33 @@ fn subcommand_help_shows_examples() {
     for (args, examples) in [
         (
             &["core", "--help"][..],
-            &["asoby core install mgba", "asoby core update"][..],
+            &["asobou core install mgba", "asobou core update"][..],
         ),
         (
             &["config", "--help"],
             &[
-                "asoby config list",
-                "asoby config edit",
-                "asoby config get rewind.enabled",
-                "asoby config set rewind.buffer_size_mb 64",
-                "asoby config set display.fps 30",
-                "asoby config set audio.muted true",
-                "asoby config unset rewind.buffer_size_mb",
+                "asobou config list",
+                "asobou config edit",
+                "asobou config get rewind.enabled",
+                "asobou config set rewind.buffer_size_mb 64",
+                "asobou config set display.fps 30",
+                "asobou config set audio.muted true",
+                "asobou config unset rewind.buffer_size_mb",
             ],
         ),
         (
             &["state", "--help"],
             &[
-                "asoby state list",
-                "asoby state list 'Pokemon Emerald.gba' --core=mgba",
+                "asobou state list",
+                "asobou state list 'Pokemon Emerald.gba' --core=mgba",
             ],
         ),
         (
             &["brew", "--help"],
             &[
-                "asoby brew flappybird.nes",
-                "asoby brew pacrun.gba --renderer=ascii",
-                "asoby brew blt.sfc --core=snes9x",
+                "asobou brew flappybird.nes",
+                "asobou brew pacrun.gba --renderer=ascii",
+                "asobou brew blt.sfc --core=snes9x",
             ],
         ),
     ] {
@@ -224,7 +224,7 @@ fn brew_without_a_game_shows_usage_guidance() {
     assert!(stdout.is_empty(), "{stdout}");
     assert!(stderr.contains("Downloads a supported Retrobrews homebrew ROM"));
     assert!(stderr.contains("Supported extensions: .gbc, .rom, .nes"));
-    assert!(stderr.contains("asoby brew flappybird.nes"));
+    assert!(stderr.contains("asobou brew flappybird.nes"));
 }
 
 #[test]
@@ -245,7 +245,7 @@ fn help_has_no_ansi_styling() {
         &["core", "--help"],
         &["brew", "--help"],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
+        let output = Command::new(env!("CARGO_BIN_EXE_asobou"))
             .env("CLICOLOR_FORCE", "1")
             .args(args)
             .output()
@@ -257,7 +257,7 @@ fn help_has_no_ansi_styling() {
         );
     }
 
-    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
+    let output = Command::new(env!("CARGO_BIN_EXE_asobou"))
         .env("CLICOLOR_FORCE", "1")
         .arg("--version")
         .output()
@@ -270,7 +270,7 @@ fn core_list_shows_header() {
     // An empty cores dir prints "No cores installed." without a header, so
     // stub an installed registered core file.
     let dir = tempfile::tempdir().unwrap();
-    let cores = dir.path().join("asoby").join("cores");
+    let cores = dir.path().join("asobou").join("cores");
     std::fs::create_dir_all(&cores).unwrap();
     let ext = match std::env::consts::OS {
         "macos" | "ios" => "dylib",
@@ -288,7 +288,7 @@ fn core_list_shows_header() {
 #[test]
 fn core_list_shows_arbitrary_installed_cores() {
     let dir = tempfile::tempdir().unwrap();
-    let cores = dir.path().join("asoby").join("cores");
+    let cores = dir.path().join("asobou").join("cores");
     std::fs::create_dir_all(&cores).unwrap();
     let ext = match std::env::consts::OS {
         "macos" | "ios" => "dylib",
@@ -417,12 +417,12 @@ fn state_list_skips_temp_files_and_reports_malformed_names() {
     let dir = tempfile::tempdir().unwrap();
     let game_dir = dir
         .path()
-        .join("asoby")
+        .join("asobou")
         .join("states")
         .join("fceumm")
         .join("game.nes");
     std::fs::create_dir_all(&game_dir).unwrap();
-    std::fs::write(game_dir.join(".asoby-state-abc"), b"x").unwrap();
+    std::fs::write(game_dir.join(".asobou-state-abc"), b"x").unwrap();
     std::fs::write(game_dir.join("garbage.bin"), b"x").unwrap();
     write_state(
         dir.path(),
@@ -435,7 +435,7 @@ fn state_list_skips_temp_files_and_reports_malformed_names() {
 
     assert_eq!(code, 0);
     assert!(stdout.contains("game.nes"));
-    assert!(!stdout.contains(".asoby-state-abc"));
+    assert!(!stdout.contains(".asobou-state-abc"));
     assert!(!stdout.contains("garbage.bin"));
     assert!(stderr.contains("malformed"));
     assert!(stderr.contains("garbage.bin"));
@@ -460,9 +460,9 @@ fn state_list_shortens_home_paths_with_tilde() {
         "game.nes",
         "game.nes.20260802T151205.903+0800.state",
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
+    let output = Command::new(env!("CARGO_BIN_EXE_asobou"))
         .env("XDG_DATA_HOME", &data)
-        .env("ASOBY_CONFIG", data.join("no-config.toml"))
+        .env("ASOBOU_CONFIG", data.join("no-config.toml"))
         .env("HOME", home.path())
         .args(["state", "list"])
         .output()
@@ -472,7 +472,7 @@ fn state_list_shortens_home_paths_with_tilde() {
     assert_eq!(output.status.code(), Some(0));
     assert!(
         stdout.contains(
-            "~/data/asoby/states/fceumm/game.nes/game.nes.20260802T151205.903+0800.state"
+            "~/data/asobou/states/fceumm/game.nes/game.nes.20260802T151205.903+0800.state"
         )
     );
     assert!(!stdout.contains(home.path().to_str().unwrap()));
@@ -490,12 +490,12 @@ fn nonexistent_state_path_fails_clearly() {
 }
 
 #[test]
-fn asoby_config_loads_the_explicit_path() {
+fn asobou_config_loads_the_explicit_path() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("custom.toml");
     std::fs::write(&config, "[input\n").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
-        .env("ASOBY_CONFIG", config)
+    let output = Command::new(env!("CARGO_BIN_EXE_asobou"))
+        .env("ASOBOU_CONFIG", config)
         .arg("missing.rom")
         .output()
         .unwrap();
@@ -778,8 +778,8 @@ fn config_edit_creates_and_validates_the_file() {
     .unwrap();
     std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
-        .env("ASOBY_CONFIG", &config)
+    let output = Command::new(env!("CARGO_BIN_EXE_asobou"))
+        .env("ASOBOU_CONFIG", &config)
         .env("VISUAL", format!("'{}'", editor.display()))
         .env("EDITOR", "false")
         .args(["config", "edit"])
@@ -793,8 +793,8 @@ fn config_edit_creates_and_validates_the_file() {
     );
 
     std::fs::write(&editor, "#!/bin/sh\nprintf '[state\\n' > \"$1\"\n").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
-        .env("ASOBY_CONFIG", &config)
+    let output = Command::new(env!("CARGO_BIN_EXE_asobou"))
+        .env("ASOBOU_CONFIG", &config)
         .env("VISUAL", format!("'{}'", editor.display()))
         .args(["config", "edit"])
         .output()
@@ -808,8 +808,8 @@ fn config_edit_creates_and_validates_the_file() {
 fn config_edit_requires_an_editor() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("config.toml");
-    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
-        .env("ASOBY_CONFIG", &config)
+    let output = Command::new(env!("CARGO_BIN_EXE_asobou"))
+        .env("ASOBOU_CONFIG", &config)
         .env_remove("VISUAL")
         .env_remove("EDITOR")
         .args(["config", "edit"])
@@ -826,8 +826,8 @@ fn config_edit_requires_an_editor() {
 fn config_edit_reports_editor_failure() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("config.toml");
-    let output = Command::new(env!("CARGO_BIN_EXE_asoby"))
-        .env("ASOBY_CONFIG", &config)
+    let output = Command::new(env!("CARGO_BIN_EXE_asobou"))
+        .env("ASOBOU_CONFIG", &config)
         .env("VISUAL", "false")
         .args(["config", "edit"])
         .output()
@@ -856,12 +856,12 @@ fn config_get_paths_data_dir_uses_config_value() {
 fn config_get_paths_data_dir_expands_tilde() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("config.toml");
-    std::fs::write(&config, "[paths]\ndata_dir = \"~/asoby-data\"\n").unwrap();
+    std::fs::write(&config, "[paths]\ndata_dir = \"~/asobou-data\"\n").unwrap();
 
     let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "paths.data_dir"]);
     assert_eq!(code, 0, "{stderr}");
     let home = dirs::home_dir().unwrap();
-    assert_eq!(stdout, format!("{}\n", home.join("asoby-data").display()));
+    assert_eq!(stdout, format!("{}\n", home.join("asobou-data").display()));
 }
 
 #[test]
@@ -890,7 +890,7 @@ fn config_get_paths_data_dir_uses_xdg_env_when_unset() {
     let (stdout, stderr, code) =
         run_with_config_env(&config, xdg.path(), &["config", "get", "paths.data_dir"]);
     assert_eq!(code, 0, "{stderr}");
-    assert_eq!(stdout, format!("{}\n", xdg.path().join("asoby").display()));
+    assert_eq!(stdout, format!("{}\n", xdg.path().join("asobou").display()));
 }
 
 #[test]
@@ -900,17 +900,17 @@ fn config_set_paths_data_dir_stores_raw_and_reports_effective() {
 
     let (stdout, stderr, code) = run_with_config(
         &config,
-        &["config", "set", "paths.data_dir", "~/asoby-data"],
+        &["config", "set", "paths.data_dir", "~/asobou-data"],
     );
     assert_eq!(code, 0, "{stderr}");
     let home = dirs::home_dir().unwrap();
     assert_eq!(
         stdout,
-        format!("paths.data_dir = {}\n", home.join("asoby-data").display())
+        format!("paths.data_dir = {}\n", home.join("asobou-data").display())
     );
     assert_eq!(
         std::fs::read_to_string(&config).unwrap(),
-        "[paths]\ndata_dir = \"~/asoby-data\"\n"
+        "[paths]\ndata_dir = \"~/asobou-data\"\n"
     );
 
     let (stdout, stderr, code) = run_with_config(&config, &["config", "unset", "paths.data_dir"]);

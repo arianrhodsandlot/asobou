@@ -44,11 +44,11 @@ fn resolve_data_base_from(
         return expand_tilde(dir, home);
     }
     if let Some(xdg) = xdg_data_home.filter(|path| !path.as_os_str().is_empty()) {
-        return xdg.join("asoby");
+        return xdg.join("asobou");
     }
     platform
         .expect("could not determine the data directory")
-        .join("asoby")
+        .join("asobou")
 }
 
 fn resolve_cache_base_from(
@@ -61,11 +61,11 @@ fn resolve_cache_base_from(
         return expand_tilde(dir, home);
     }
     if let Some(xdg) = xdg_cache_home.filter(|path| !path.as_os_str().is_empty()) {
-        return xdg.join("asoby");
+        return xdg.join("asobou");
     }
     platform
         .expect("could not determine the cache directory")
-        .join("asoby")
+        .join("asobou")
 }
 
 fn expand_tilde(value: &str, home: Option<&Path>) -> PathBuf {
@@ -107,7 +107,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(base, PathBuf::from("/xdg/asoby"));
+        assert_eq!(base, PathBuf::from("/xdg/asobou"));
     }
 
     #[test]
@@ -119,7 +119,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(base, PathBuf::from("/platform/asoby"));
+        assert_eq!(base, PathBuf::from("/platform/asobou"));
     }
 
     #[test]
@@ -167,10 +167,10 @@ mod tests {
     }
 
     #[test]
-    fn platform_fallback_appends_asoby() {
+    fn platform_fallback_appends_asobou() {
         let base = resolve_data_base_from(None, None, Some(Path::new("/platform")), None);
 
-        assert_eq!(base, PathBuf::from("/platform/asoby"));
+        assert_eq!(base, PathBuf::from("/platform/asobou"));
     }
 
     #[test]
@@ -191,7 +191,7 @@ mod tests {
             Some(Path::new("/home/user")),
         );
 
-        assert_eq!(base, PathBuf::from("/xdg/asoby"));
+        assert_eq!(base, PathBuf::from("/xdg/asobou"));
 
         let base = resolve_cache_base_from(
             None,

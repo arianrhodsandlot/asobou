@@ -1,9 +1,9 @@
 {
-  "name": "asoby-linux-arm64-gnu",
-  "description": "Platform binary for asoby on Linux arm64 with glibc",
-  "homepage": "https://github.com/arianrhodsandlot/asoby",
+  "name": "asobou-linux-arm64-gnu",
+  "description": "Platform binary for asobou on Linux arm64 with glibc",
+  "homepage": "https://github.com/arianrhodsandlot/asobou",
   "bugs": {
-    "url": "https://github.com/arianrhodsandlot/asoby/issues",
+    "url": "https://github.com/arianrhodsandlot/asobou/issues",
     "email": "theguidanceofawhitetower@gmail.com"
   },
   "license": "MIT",
@@ -13,7 +13,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/arianrhodsandlot/asoby.git"
+    "url": "git+https://github.com/arianrhodsandlot/asobou.git"
   },
   "os": [
     "linux"

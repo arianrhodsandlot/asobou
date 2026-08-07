@@ -83,8 +83,8 @@ mod tests {
         let home = Path::new("/home/user");
 
         assert_eq!(
-            shorten_home(Path::new("/opt/asoby/s.state"), home),
-            "/opt/asoby/s.state"
+            shorten_home(Path::new("/opt/asobou/s.state"), home),
+            "/opt/asobou/s.state"
         );
     }
 

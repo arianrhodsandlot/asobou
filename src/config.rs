@@ -238,7 +238,7 @@ impl fmt::Display for ConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::PathUnavailable => write!(formatter, "could not determine the config directory"),
-            Self::EmptyOverride => write!(formatter, "ASOBY_CONFIG must not be empty"),
+            Self::EmptyOverride => write!(formatter, "ASOBOU_CONFIG must not be empty"),
             Self::Read { path, source } => {
                 write!(
                     formatter,
@@ -314,7 +314,7 @@ pub fn load_settings() -> Result<Settings, ConfigError> {
 
 fn config_path() -> Result<PathBuf, ConfigError> {
     resolve_config_path(
-        std::env::var_os("ASOBY_CONFIG").as_deref(),
+        std::env::var_os("ASOBOU_CONFIG").as_deref(),
         std::env::var_os("XDG_CONFIG_HOME").as_deref(),
         dirs::home_dir().as_deref(),
         dirs::config_dir().as_deref(),
@@ -322,12 +322,12 @@ fn config_path() -> Result<PathBuf, ConfigError> {
 }
 
 fn resolve_config_path(
-    asoby_config: Option<&OsStr>,
+    asobou_config: Option<&OsStr>,
     xdg_config_home: Option<&OsStr>,
     _home: Option<&Path>,
     _os_config_dir: Option<&Path>,
 ) -> Result<PathBuf, ConfigError> {
-    if let Some(path) = asoby_config {
+    if let Some(path) = asobou_config {
         if path.is_empty() {
             return Err(ConfigError::EmptyOverride);
         }
@@ -337,7 +337,7 @@ fn resolve_config_path(
     if let Some(path) = xdg_config_home
         && !path.is_empty()
     {
-        return Ok(PathBuf::from(path).join("asoby").join("config.toml"));
+        return Ok(PathBuf::from(path).join("asobou").join("config.toml"));
     }
 
     #[cfg(windows)]
@@ -347,7 +347,7 @@ fn resolve_config_path(
         .map(|path| path.join(".config"))
         .ok_or(ConfigError::PathUnavailable)?;
 
-    Ok(base.join("asoby").join("config.toml"))
+    Ok(base.join("asobou").join("config.toml"))
 }
 
 fn load_settings_from(path: &Path) -> Result<Settings, ConfigError> {
@@ -1010,7 +1010,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn asoby_config_has_highest_priority() {
+    fn asobou_config_has_highest_priority() {
         let path = resolve_config_path(
             Some(OsStr::new("custom.toml")),
             Some(OsStr::new("/xdg")),
@@ -1032,7 +1032,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(path, PathBuf::from("/xdg/asoby/config.toml"));
+        assert_eq!(path, PathBuf::from("/xdg/asobou/config.toml"));
     }
 
     #[cfg(not(windows))]
@@ -1046,7 +1046,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(path, PathBuf::from("/home/user/.config/asoby/config.toml"));
+        assert_eq!(path, PathBuf::from("/home/user/.config/asobou/config.toml"));
     }
 
     #[test]

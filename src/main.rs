@@ -14,21 +14,21 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
-    name = "asoby",
+    name = "asobou",
     about = "Play retro games directly in your terminal",
     version,
     disable_version_flag = true,
     disable_help_subcommand = true,
     after_help = "Examples:
-  asoby 'Super Mario Bros.nes'                       Start a game
-  asoby 'Streets of Rage 2.md' --renderer=ascii      Start a game and render as ASCII characters
-  asoby 'Super Castlevania IV.zip' --core=snes9x     Run with an explicit core
-  asoby 'Super Metroid.sfc' --state=~/backup.state   Load a save state at startup
-  asoby 'Super Metroid.sfc' --resume                 Load the latest managed state at startup
-  asoby brew flappybird.nes                          Download and play a homebrew game
-  asoby core install genesis_plus_gx                 Install a libretro core
-  asoby config set rewind.buffer_size_mb 64          Set a configuration value
-  asoby state list 'Pokemon Emerald.gba' --core=mgba List saved states, filtered"
+  asobou 'Super Mario Bros.nes'                       Start a game
+  asobou 'Streets of Rage 2.md' --renderer=ascii      Start a game and render as ASCII characters
+  asobou 'Super Castlevania IV.zip' --core=snes9x     Run with an explicit core
+  asobou 'Super Metroid.sfc' --state=~/backup.state   Load a save state at startup
+  asobou 'Super Metroid.sfc' --resume                 Load the latest managed state at startup
+  asobou brew flappybird.nes                          Download and play a homebrew game
+  asobou core install genesis_plus_gx                 Install a libretro core
+  asobou config set rewind.buffer_size_mb 64          Set a configuration value
+  asobou state list 'Pokemon Emerald.gba' --core=mgba List saved states, filtered"
 )]
 struct Args {
     #[command(subcommand)]
@@ -130,13 +130,13 @@ enum Command {
         visible_alias = "cfg",
         disable_help_subcommand = true,
         after_help = "Examples:
-  asoby config list                         List supported keys and effective values
-  asoby config edit                         Open the config in $VISUAL or $EDITOR
-  asoby config get rewind.enabled           Print the effective rewind setting
-  asoby config set rewind.buffer_size_mb 64 Override the rewind buffer size
-  asoby config set display.fps 30            Set the terminal refresh rate
-  asoby config set audio.muted true         Disable game audio by default
-  asoby config unset rewind.buffer_size_mb  Restore the default rewind buffer size"
+  asobou config list                         List supported keys and effective values
+  asobou config edit                         Open the config in $VISUAL or $EDITOR
+  asobou config get rewind.enabled           Print the effective rewind setting
+  asobou config set rewind.buffer_size_mb 64 Override the rewind buffer size
+  asobou config set display.fps 30            Set the terminal refresh rate
+  asobou config set audio.muted true         Disable game audio by default
+  asobou config unset rewind.buffer_size_mb  Restore the default rewind buffer size"
     )]
     Config {
         #[command(subcommand)]
@@ -147,10 +147,10 @@ enum Command {
         visible_alias = "c",
         disable_help_subcommand = true,
         after_help = "Examples:
-  asoby core list                List installed cores
-  asoby core install mgba        Install the mGBA core
-  asoby core update              Update every installed core
-  asoby core remove mgba         Remove the mGBA core"
+  asobou core list                List installed cores
+  asobou core install mgba        Install the mGBA core
+  asobou core update              Update every installed core
+  asobou core remove mgba         Remove the mGBA core"
     )]
     Core {
         #[command(subcommand)]
@@ -161,9 +161,9 @@ enum Command {
         visible_alias = "s",
         disable_help_subcommand = true,
         after_help = "Examples:
-  asoby state list                                      List every managed save state
-  asoby state list 'Pokemon Emerald.gba'                Filter by ROM filename
-  asoby state list 'Pokemon Emerald.gba' --core=mgba    Filter by ROM and core"
+  asobou state list                                      List every managed save state
+  asobou state list 'Pokemon Emerald.gba'                Filter by ROM filename
+  asobou state list 'Pokemon Emerald.gba' --core=mgba    Filter by ROM and core"
     )]
     State {
         #[command(subcommand)]
@@ -178,9 +178,9 @@ enum Command {
 Supported extensions: .gbc, .rom, .nes, .sms, .gba, .sfc, .d64, .tap.
 
 Examples:
-  asoby brew flappybird.nes
-  asoby brew pacrun.gba --renderer=ascii
-  asoby brew blt.sfc --core=snes9x"
+  asobou brew flappybird.nes
+  asobou brew pacrun.gba --renderer=ascii
+  asobou brew blt.sfc --core=snes9x"
     )]
     Brew {
         #[arg(help = "Homebrew ROM filename, including its extension")]

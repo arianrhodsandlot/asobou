@@ -1,14 +1,14 @@
-# Asoby
+# asobou
 
 ## Overview
 
 Play retro games directly in your terminal.
 
 ```sh
-asoby 'Super Mario Bros.zip'
+asobou 'Super Mario Bros.zip'
 ```
 
-Asoby detects the system, ensures a suitable emulator is available, picks the best
+asobou detects the system, ensures a suitable emulator is available, picks the best
 renderer your terminal supports, and starts the game.
 
 ## Screenshots
@@ -20,29 +20,29 @@ Coming soon.
 - You do not necessarily need to install it if you just want a quick try.
 
   ```sh
-  npx asoby
+  npx asobou
   ```
 
 - From npm:
 
   ```sh
-  npm install asoby -g
+  npm install asobou -g
   ```
 
 - From crates.io:
 
   ```sh
-  cargo install asoby
+  cargo install asobou
   ```
 
 ## Configuration
 
-Asoby loads the first applicable config path:
+asobou loads the first applicable config path:
 
-1. The exact path in `ASOBY_CONFIG`
-2. `$XDG_CONFIG_HOME/asoby/config.toml`
-3. `~/.config/asoby/config.toml` on Linux and macOS
-4. `%APPDATA%\asoby\config.toml` on Windows
+1. The exact path in `ASOBOU_CONFIG`
+2. `$XDG_CONFIG_HOME/asobou/config.toml`
+3. `~/.config/asobou/config.toml` on Linux and macOS
+4. `%APPDATA%\asobou\config.toml` on Windows
 
 The config file is optional and an omitted setting keeps its default. Every
 value in the example below is a default. Explicit command-line values override
@@ -97,13 +97,13 @@ buffer_size_mb = 20     # Memory cap for stored snapshots
 save_on_exit = false    # Save a state when exiting cleanly
 
 [paths]
-# data_dir = "~/asoby-data"    # Override the data base (cores, save states)
-# cache_dir = "~/asoby-cache"  # Override the cache base (brew downloads)
+# data_dir = "~/asobou-data"    # Override the data base (cores, save states)
+# cache_dir = "~/asobou-cache"  # Override the cache base (brew downloads)
 ```
 
-Data lives in `$XDG_DATA_HOME/asoby` and cache in `$XDG_CACHE_HOME/asoby` by
-default (`~/Library/Application Support/asoby` and `~/Library/Caches/asoby` on
-macOS, `~/.local/share/asoby` and `~/.cache/asoby` on Linux). `paths.data_dir`
+Data lives in `$XDG_DATA_HOME/asobou` and cache in `$XDG_CACHE_HOME/asobou` by
+default (`~/Library/Application Support/asobou` and `~/Library/Caches/asobou` on
+macOS, `~/.local/share/asobou` and `~/.cache/asobou` on Linux). `paths.data_dir`
 and `paths.cache_dir` override the base directory: cores and save states go
 under `data_dir/cores` and `data_dir/states`, brew downloads under
 `cache_dir/brew`. Values must be absolute or start with `~/`. These settings
@@ -184,17 +184,17 @@ remain accepted.
 
 ### Input behavior
 
-Asoby requests enhanced keyboard reporting from terminals that support it,
+asobou requests enhanced keyboard reporting from terminals that support it,
 providing distinct press, repeat, and release events. Traditional terminals,
 and sessions through tmux, screen, or SSH, may only report presses and
-operating-system auto-repeat. In that case Asoby uses a 140 ms repeat timeout
+operating-system auto-repeat. In that case asobou uses a 140 ms repeat timeout
 after a separate initial-hold grace period. This avoids a gap before
 auto-repeat starts, but legacy protocols cannot distinguish a held key from a
 released key with complete accuracy: a shorter timeout stutters and a longer
 timeout can briefly continue movement after release.
 
 Repeat delay, repeat rate, standalone modifier reporting, and simultaneous key
-support vary across terminals and operating systems. Asoby preserves every
+support vary across terminals and operating systems. asobou preserves every
 mapped event it receives and clears held input on focus loss, input errors,
 shutdown, and startup. Standalone modifier and numeric keypad bindings require
 enhanced keyboard reporting to be distinguished reliably.
@@ -205,17 +205,17 @@ Press the save key to write a new timestamped state, and the load key to load
 the newest state for the current ROM and core. Both actions fire once per key
 press. Loading when no state exists is not an error and reports `No save state
 found` in the status line. There are no slots, no state browser, and no
-automatic pruning: every save creates a new file and Asoby never overwrites or
+automatic pruning: every save creates a new file and asobou never overwrites or
 deletes states. Manage the files with normal filesystem tools.
 
 States are stored under the platform data directory:
 
 ```text
-<data-dir>/asoby/states/<core-name>/<rom-file-name>/
+<data-dir>/asobou/states/<core-name>/<rom-file-name>/
 ```
 
 For example, on Linux with `XDG_DATA_HOME` unset, states for `fceumm` live in
-`~/.local/share/asoby/states/fceumm/`:
+`~/.local/share/asobou/states/fceumm/`:
 
 ```text
 states/
@@ -235,7 +235,7 @@ platform extension removed, so different cores keep separate states.
 Timestamps use the local timezone with the numeric offset, in the
 filesystem-safe basic ISO 8601 form `YYYYMMDDTHHMMSS.sss+HHMM`
 (e.g. `20260802T151205.903+0800`). When a generated filename already exists,
-Asoby appends a deterministic counter (`-2`, `-3`, ...) instead of overwriting.
+asobou appends a deterministic counter (`-2`, `-3`, ...) instead of overwriting.
 The newest state is selected by parsing these timestamps and comparing absolute
 instants, so daylight-saving transitions and copied files with changed
 modification times do not affect the result.
@@ -246,19 +246,19 @@ Pass any state file to load it at startup, after the core initializes and the
 ROM loads but before the first emulated frame:
 
 ```sh
-asoby 'Super Mario Bros.nes' --state /path/to/super-mario.state
+asobou 'Super Mario Bros.nes' --state /path/to/super-mario.state
 ```
 
 A missing, corrupt, incompatible, or unloadable explicitly requested state is a
 fatal startup error. The file's embedded core and ROM identifiers must match
 the running core and ROM, but its filename is ignored, so renamed or copied
-files load fine. Without `--state`, Asoby starts the game normally and does not
+files load fine. Without `--state`, asobou starts the game normally and does not
 automatically load the newest state. States saved after loading an explicit
 file still go to the normal managed state directory.
 
 ### Save on exit
 
-With `save_on_exit = true` in the `[state]` section, Asoby writes a new state
+With `save_on_exit = true` in the `[state]` section, asobou writes a new state
 whenever the session ends cleanly, including Escape and Ctrl-C. It saves while
 the ROM and core are still loaded, before core cleanup. Save-on-exit is skipped
 when the ROM failed to load or the core does not support complete savestates.
@@ -268,9 +268,9 @@ when the ROM failed to load or the core does not support complete savestates.
 The read-only `state list` command shows every managed state:
 
 ```sh
-asoby state list
-asoby state list 'Super Mario Bros.nes'
-asoby state list 'Super Mario Bros.nes' --core fceumm
+asobou state list
+asobou state list 'Super Mario Bros.nes'
+asobou state list 'Super Mario Bros.nes' --core fceumm
 ```
 
 ```text
@@ -280,7 +280,7 @@ Super Mario Bros.nes   fceumm   2026-08-02 15:12:05 +08:00   /absolute/path/to/t
 
 `GAME` is the complete launched ROM filename, `SAVED` is formatted in the
 timestamp's recorded local offset, and `PATH` is absolute so it can be passed
-directly to `rm`, `cp`, or `asoby <rom> --state <path>` (on Unix, paths under
+directly to `rm`, `cp`, or `asobou <rom> --state <path>` (on Unix, paths under
 the home directory are shown as `~/...`). Temporary files are skipped. Files that do not match the managed naming scheme, whose embedded
 timestamp disagrees with their name, whose embedded core or ROM does not match
 the enclosing directories, or that exceed 256 MiB are reported as malformed

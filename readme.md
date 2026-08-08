@@ -5,11 +5,19 @@
   </picture>
 </p>
 
+---
+
 <p align="center">
-Play retro games directly in your terminal.
+Play retro games directly in your terminal
 </p>
 
-![example](docs/images/screenshots/example.gif)
+<p align="center">
+  <img src="docs/images/screenshots/example.gif" alt="example">
+</p>
+
+> [!note]
+>
+> The game we are using for demonstration here is <i><a href="https://www.romhacking.net/homebrew/1/">Alter Ego</a></i>.
 
 ## Overview
 
@@ -17,7 +25,7 @@ Play retro games directly in your terminal.
 asobou 'Super Mario Bros.zip'
 ```
 
-asobou detects the system, ensures a suitable emulator is available, picks the best
+Asobou detects the system, ensures a suitable emulator is available, picks the best
 renderer your terminal supports, and starts the game.
 
 ## Installation

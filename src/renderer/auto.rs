@@ -30,8 +30,7 @@ fn graphics_supported(no_alt_screen: bool) -> bool {
 
 // Sends the kitty graphics protocol query and watches for the "OK" response,
 // bounded by a deadline. Terminals that ignore the query (or respond with
-// anything else) fall back to the block renderer instead of hanging forever,
-// which is what viuer's own support check does.
+// anything else) fall back to the block renderer instead of hanging forever.
 fn probe_kitty_support(stdout: &mut dyn io::Write) -> bool {
     if stdout
         .write_all(KITTY_QUERY)

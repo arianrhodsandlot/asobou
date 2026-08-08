@@ -13,10 +13,29 @@ const KITTY_PLACEMENT_ID: u32 = 1;
 const KITTY_CHUNK_SIZE: usize = 4096;
 
 pub struct GraphicRenderer {
-    config: viuer::Config,
+    width: Option<u32>,
+    height: Option<u32>,
     screen_active: bool,
     reserved_rows: usize,
     compression_enabled: bool,
+}
+
+/// Size an image in terminal cells for kitty placement.
+///
+/// A terminal cell is twice as tall as it is wide, so `cell_height` rows hold
+/// `2 * cell_height` pixels. With `cell_width` set the exact cell size is used;
+/// otherwise the image keeps its aspect ratio and only the height is bounded.
+fn fit_cell_size(
+    img_width: u32,
+    img_height: u32,
+    cell_width: Option<u32>,
+    cell_height: u32,
+) -> (u32, u32) {
+    match cell_width {
+        Some(width) => (width, cell_height),
+        None if img_height <= 2 * cell_height => (img_width, img_height.div_ceil(2).max(1)),
+        None => (img_width * 2 * cell_height / img_height, cell_height),
+    }
 }
 
 impl GraphicRenderer {
@@ -26,7 +45,8 @@ impl GraphicRenderer {
 
     fn with_compression(reserved_rows: usize, compression_enabled: bool) -> Self {
         Self {
-            config: viuer::Config::default(),
+            width: None,
+            height: None,
             screen_active: false,
             reserved_rows,
             compression_enabled,
@@ -70,14 +90,12 @@ impl GraphicRenderer {
         if terminal_columns == 0 || available_rows == 0 {
             return Ok(());
         }
-        let height = self.config.height.map_or(available_rows, |height| {
+        let height = self.height.map_or(available_rows, |height| {
             usize::try_from(height)
                 .unwrap_or(usize::MAX)
                 .min(available_rows)
         });
-        let display_size = viuer::resize(img, self.config.width, Some(height as u32));
-        let columns = display_size.width();
-        let rows = display_size.height().div_ceil(2);
+        let (columns, rows) = fit_cell_size(img.width(), img.height(), self.width, height as u32);
         let pixels = img.to_rgb8();
         let payload = if self.compression_enabled {
             let mut encoder = ZlibEncoder::new(
@@ -158,7 +176,7 @@ impl Drop for GraphicRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{GraphicRenderer, KITTY_IMAGE_ID, KITTY_PLACEMENT_ID};
+    use super::{fit_cell_size, GraphicRenderer, KITTY_IMAGE_ID, KITTY_PLACEMENT_ID};
     use base64::prelude::{BASE64_STANDARD, Engine as _};
     use flate2::read::ZlibDecoder;
     use image::{DynamicImage, Rgb, RgbImage};
@@ -167,8 +185,8 @@ mod tests {
     #[test]
     fn kitty_stream_reuses_image_and_placement_ids() {
         let mut renderer = GraphicRenderer::with_compression(0, true);
-        renderer.config.width = Some(1);
-        renderer.config.height = Some(1);
+        renderer.width = Some(1);
+        renderer.height = Some(1);
         let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(2, 2, Rgb([1, 2, 3])));
         let mut output = Vec::new();
 
@@ -254,6 +272,15 @@ mod tests {
         assert!(continuation_chunks.iter().all(
             |chunk| chunk.starts_with("\x1b_Gm=1,q=2;") || chunk.starts_with("\x1b_Gm=0,q=2;")
         ));
+    }
+
+    #[test]
+    fn fit_cell_size_bounds_and_rounds_correctly() {
+        assert_eq!(fit_cell_size(200, 200, None, 22), (44, 22));
+        assert_eq!(fit_cell_size(200, 100, None, 22), (88, 22));
+        assert_eq!(fit_cell_size(80, 40, None, 22), (80, 20));
+        assert_eq!(fit_cell_size(80, 39, None, 22), (80, 20));
+        assert_eq!(fit_cell_size(200, 200, Some(1), 1), (1, 1));
     }
 
     #[test]

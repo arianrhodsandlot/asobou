@@ -165,8 +165,43 @@ pub struct RunConfig {
 
 struct TerminalGuard {
     focus_enabled: bool,
-    enhanced_keyboard_enabled: bool,
+    keyboard_flags_pushed: bool,
     release_events_supported: bool,
+}
+
+#[derive(Default)]
+struct GhosttyCtrlCWorkaround {
+    control_pressed_without_key: bool,
+}
+
+impl GhosttyCtrlCWorkaround {
+    fn handle_key(&mut self, event: crossterm::event::KeyEvent) -> bool {
+        let control = matches!(
+            event.code,
+            crossterm::event::KeyCode::Modifier(
+                crossterm::event::ModifierKeyCode::LeftControl
+                    | crossterm::event::ModifierKeyCode::RightControl
+            )
+        );
+        match (control, event.kind) {
+            (true, crossterm::event::KeyEventKind::Press) => {
+                self.control_pressed_without_key = true;
+                false
+            }
+            (true, crossterm::event::KeyEventKind::Release) => {
+                std::mem::take(&mut self.control_pressed_without_key)
+            }
+            (true, crossterm::event::KeyEventKind::Repeat) => false,
+            (false, _) => {
+                self.control_pressed_without_key = false;
+                false
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.control_pressed_without_key = false;
+    }
 }
 
 impl TerminalGuard {
@@ -174,17 +209,18 @@ impl TerminalGuard {
         crossterm::terminal::enable_raw_mode()?;
         let mut stdout = io::stdout();
         let focus_enabled = crossterm::execute!(stdout, EnableFocusChange).is_ok();
+        let ghostty = crate::terminal::is_ghostty();
         let keyboard_enhancement_supported =
-            crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+            ghostty || crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
         let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
             | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
             | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
-        let enhanced_keyboard_enabled = keyboard_enhancement_supported
+        let keyboard_flags_pushed = keyboard_enhancement_supported
             && crossterm::execute!(stdout, PushKeyboardEnhancementFlags(flags)).is_ok();
         Ok(Self {
             focus_enabled,
-            enhanced_keyboard_enabled,
-            release_events_supported: cfg!(windows) || enhanced_keyboard_enabled,
+            keyboard_flags_pushed,
+            release_events_supported: cfg!(windows) || keyboard_flags_pushed,
         })
     }
 }
@@ -192,14 +228,14 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut stdout = io::stdout();
-        if self.enhanced_keyboard_enabled {
+        if self.keyboard_flags_pushed {
             let _ = crossterm::execute!(stdout, PopKeyboardEnhancementFlags);
         }
         if self.focus_enabled {
             let _ = crossterm::execute!(stdout, DisableFocusChange);
         }
         let _ = stdout.flush();
-        if self.enhanced_keyboard_enabled {
+        if self.keyboard_flags_pushed {
             drain_pending_terminal_events();
         }
         let _ = crossterm::terminal::disable_raw_mode();
@@ -445,41 +481,42 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         let render_mailbox = Arc::clone(&frame_mailbox);
         let status_messages = Arc::new(Mutex::new(None::<(String, Instant)>));
         let status_messages_render = Arc::clone(&status_messages);
-        let render_thread = thread::spawn(move || -> io::Result<()> {
-            let mut renderer = renderer;
-            let mut stdout = io::stdout().lock();
-            let result = (|| {
-                while let Some(frame) = render_mailbox.receive() {
-                    renderer.render(&frame, &mut stdout)?;
-                    let (columns, rows) = crossterm::terminal::size()?;
-                    let message = {
-                        let mut guard = status_messages_render.lock().unwrap();
-                        match &*guard {
-                            Some((text, at)) if at.elapsed() < STATUS_MESSAGE_DURATION => {
-                                Some(text.clone())
+        let render_thread = thread::spawn(
+            move || -> io::Result<(io::Result<()>, Box<dyn crate::renderer::Renderer>)> {
+                let mut renderer = renderer;
+                let mut stdout = io::stdout().lock();
+                let result = (|| {
+                    while let Some(frame) = render_mailbox.receive() {
+                        renderer.render(&frame, &mut stdout)?;
+                        let (columns, rows) = crossterm::terminal::size()?;
+                        let message = {
+                            let mut guard = status_messages_render.lock().unwrap();
+                            match &*guard {
+                                Some((text, at)) if at.elapsed() < STATUS_MESSAGE_DURATION => {
+                                    Some(text.clone())
+                                }
+                                _ => {
+                                    *guard = None;
+                                    None
+                                }
                             }
-                            _ => {
-                                *guard = None;
-                                None
-                            }
-                        }
-                    };
-                    write_status_lines(
-                        &mut stdout,
-                        &status_lines,
-                        message.as_deref(),
-                        columns,
-                        rows,
-                    )?;
-                    stdout.flush()?;
-                }
-                Ok(())
-            })();
-            render_mailbox.close();
-            drop(stdout);
-            renderer.cleanup();
-            result
-        });
+                        };
+                        write_status_lines(
+                            &mut stdout,
+                            &status_lines,
+                            message.as_deref(),
+                            columns,
+                            rows,
+                        )?;
+                        stdout.flush()?;
+                    }
+                    Ok(())
+                })();
+                render_mailbox.close();
+                drop(stdout);
+                Ok((result, renderer))
+            },
+        );
 
         let fps = if av_info.timing.fps.is_finite() && av_info.timing.fps > 0.0 {
             av_info.timing.fps
@@ -495,6 +532,8 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             input_bindings,
             terminal.release_events_supported,
         );
+        let mut ghostty_ctrl_c =
+            crate::terminal::is_ghostty().then(GhosttyCtrlCWorkaround::default);
         let mut input_error = None;
         let set_message = |text: &str| {
             if let Ok(mut guard) = status_messages.lock() {
@@ -508,12 +547,20 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
                 match event::poll(Duration::ZERO) {
                     Ok(true) => match event::read() {
                         Ok(Event::Key(key)) => {
+                            let ghostty_ctrl_c_requested = ghostty_ctrl_c
+                                .as_mut()
+                                .is_some_and(|workaround| workaround.handle_key(key));
                             input.handle_key(key, Instant::now());
-                            if input.quit_requested() {
+                            if ghostty_ctrl_c_requested || input.quit_requested() {
                                 RUNNING.store(false, Ordering::SeqCst);
                             }
                         }
-                        Ok(Event::FocusLost) => input.clear(),
+                        Ok(Event::FocusLost) => {
+                            input.clear();
+                            if let Some(workaround) = ghostty_ctrl_c.as_mut() {
+                                workaround.clear();
+                            }
+                        }
                         Ok(_) => {}
                         Err(error) => {
                             input.clear();
@@ -625,11 +672,13 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
         crate::emulation::libretro::set_joypad_buttons(0);
         crate::emulation::libretro::set_video_capture_enabled(true);
         frame_mailbox.close();
-        match render_thread.join() {
+        let (render_result, mut renderer) = match render_thread.join() {
             Ok(result) => result?,
             Err(_) => return Err(io::Error::other("renderer thread panicked").into()),
-        }
+        };
         drop(terminal);
+        renderer.cleanup();
+        render_result?;
 
         if serialization_supported && save_on_exit {
             match crate::emulation::state::save_state(
@@ -674,6 +723,49 @@ mod tests {
 
     fn mailbox() -> LatestFrameMailbox {
         LatestFrameMailbox::new()
+    }
+
+    #[test]
+    fn ghostty_ctrl_c_workaround_exits_after_an_unreported_key() {
+        let mut workaround = GhosttyCtrlCWorkaround::default();
+        let press = crossterm::event::KeyEvent::new_with_kind(
+            crossterm::event::KeyCode::Modifier(crossterm::event::ModifierKeyCode::LeftControl),
+            crossterm::event::KeyModifiers::CONTROL,
+            crossterm::event::KeyEventKind::Press,
+        );
+        let release = crossterm::event::KeyEvent::new_with_kind(
+            crossterm::event::KeyCode::Modifier(crossterm::event::ModifierKeyCode::LeftControl),
+            crossterm::event::KeyModifiers::CONTROL,
+            crossterm::event::KeyEventKind::Release,
+        );
+
+        workaround.handle_key(press);
+
+        assert!(workaround.handle_key(release));
+    }
+
+    #[test]
+    fn ghostty_ctrl_c_workaround_ignores_control_chords_with_reported_keys() {
+        let mut workaround = GhosttyCtrlCWorkaround::default();
+        let control_press = crossterm::event::KeyEvent::new_with_kind(
+            crossterm::event::KeyCode::Modifier(crossterm::event::ModifierKeyCode::LeftControl),
+            crossterm::event::KeyModifiers::CONTROL,
+            crossterm::event::KeyEventKind::Press,
+        );
+        let key_press = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('r'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        let control_release = crossterm::event::KeyEvent::new_with_kind(
+            crossterm::event::KeyCode::Modifier(crossterm::event::ModifierKeyCode::LeftControl),
+            crossterm::event::KeyModifiers::CONTROL,
+            crossterm::event::KeyEventKind::Release,
+        );
+
+        workaround.handle_key(control_press);
+        workaround.handle_key(key_press);
+
+        assert!(!workaround.handle_key(control_release));
     }
 
     #[test]

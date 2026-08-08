@@ -21,12 +21,7 @@ pub struct GraphicRenderer {
 
 impl GraphicRenderer {
     pub fn new(reserved_rows: usize) -> Self {
-        let term_program = std::env::var_os("TERM_PROGRAM");
-        let term = std::env::var_os("TERM");
-        Self::with_compression(
-            reserved_rows,
-            !is_ghostty_terminal(term_program.as_deref(), term.as_deref()),
-        )
+        Self::with_compression(reserved_rows, !crate::terminal::is_ghostty())
     }
 
     fn with_compression(reserved_rows: usize, compression_enabled: bool) -> Self {
@@ -141,18 +136,6 @@ impl GraphicRenderer {
     }
 }
 
-fn is_ghostty_terminal(
-    term_program: Option<&std::ffi::OsStr>,
-    term: Option<&std::ffi::OsStr>,
-) -> bool {
-    term_program.is_some_and(|value| value.to_string_lossy().eq_ignore_ascii_case("ghostty"))
-        || term.is_some_and(|value| {
-            value
-                .to_string_lossy()
-                .eq_ignore_ascii_case("xterm-ghostty")
-        })
-}
-
 impl Renderer for GraphicRenderer {
     fn setup(&mut self, _src_width: u32, _src_height: u32) {
         self.enter_screen();
@@ -175,7 +158,7 @@ impl Drop for GraphicRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{GraphicRenderer, KITTY_IMAGE_ID, KITTY_PLACEMENT_ID, is_ghostty_terminal};
+    use super::{GraphicRenderer, KITTY_IMAGE_ID, KITTY_PLACEMENT_ID};
     use base64::prelude::{BASE64_STANDARD, Engine as _};
     use flate2::read::ZlibDecoder;
     use image::{DynamicImage, Rgb, RgbImage};
@@ -250,24 +233,6 @@ mod tests {
         let decoded = BASE64_STANDARD.decode(payload).unwrap();
 
         assert_eq!((control.contains("o=z"), decoded), (false, expected));
-    }
-
-    #[test]
-    fn ghostty_terminal_detection_accepts_term_program() {
-        assert!(is_ghostty_terminal(Some("Ghostty".as_ref()), None));
-    }
-
-    #[test]
-    fn ghostty_terminal_detection_accepts_term() {
-        assert!(is_ghostty_terminal(None, Some("xterm-ghostty".as_ref())));
-    }
-
-    #[test]
-    fn ghostty_terminal_detection_rejects_other_terminals() {
-        assert!(!is_ghostty_terminal(
-            Some("iTerm.app".as_ref()),
-            Some("xterm-256color".as_ref())
-        ));
     }
 
     #[test]

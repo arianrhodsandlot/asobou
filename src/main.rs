@@ -6,6 +6,7 @@ mod emulation;
 mod input;
 mod paths;
 mod renderer;
+mod terminal;
 
 use clap::{Args as ClapArgs, FromArgMatches, Parser, Subcommand};
 use commands::run::RunConfig;

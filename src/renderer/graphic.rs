@@ -3,6 +3,7 @@ use base64::prelude::{BASE64_STANDARD, Engine as _};
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use image::{DynamicImage, RgbImage};
+use std::borrow::Cow;
 use std::io::{self, IsTerminal, Write};
 
 const ENTER_SCREEN: &[u8] = b"\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H";
@@ -15,14 +16,25 @@ pub struct GraphicRenderer {
     config: viuer::Config,
     screen_active: bool,
     reserved_rows: usize,
+    compression_enabled: bool,
 }
 
 impl GraphicRenderer {
     pub fn new(reserved_rows: usize) -> Self {
+        let term_program = std::env::var_os("TERM_PROGRAM");
+        let term = std::env::var_os("TERM");
+        Self::with_compression(
+            reserved_rows,
+            !is_ghostty_terminal(term_program.as_deref(), term.as_deref()),
+        )
+    }
+
+    fn with_compression(reserved_rows: usize, compression_enabled: bool) -> Self {
         Self {
             config: viuer::Config::default(),
             screen_active: false,
             reserved_rows,
+            compression_enabled,
         }
     }
 
@@ -72,13 +84,17 @@ impl GraphicRenderer {
         let columns = display_size.width();
         let rows = display_size.height().div_ceil(2);
         let pixels = img.to_rgb8();
-        let mut encoder = ZlibEncoder::new(
-            Vec::with_capacity(pixels.as_raw().len() / 2),
-            Compression::fast(),
-        );
-        encoder.write_all(pixels.as_raw())?;
-        let compressed = encoder.finish()?;
-        let encoded = BASE64_STANDARD.encode(compressed);
+        let payload = if self.compression_enabled {
+            let mut encoder = ZlibEncoder::new(
+                Vec::with_capacity(pixels.as_raw().len() / 2),
+                Compression::fast(),
+            );
+            encoder.write_all(pixels.as_raw())?;
+            Cow::Owned(encoder.finish()?)
+        } else {
+            Cow::Borrowed(pixels.as_raw().as_slice())
+        };
+        let encoded = BASE64_STANDARD.encode(payload);
         let chunks = encoded.as_bytes().chunks(KITTY_CHUNK_SIZE);
         let chunk_count = chunks.len();
         let mut command = Vec::with_capacity(encoded.len() + chunk_count * 32 + 256);
@@ -87,9 +103,10 @@ impl GraphicRenderer {
         for (index, chunk) in chunks.enumerate() {
             let more = u8::from(index + 1 < chunk_count);
             if index == 0 {
+                let compression = if self.compression_enabled { ",o=z" } else { "" };
                 write!(
                     command,
-                    "\x1b_Ga=t,f=24,t=d,o=z,s={},v={},i={},q=2,N=1,m={};",
+                    "\x1b_Ga=t,f=24,t=d{compression},s={},v={},i={},q=2,N=1,m={};",
                     pixels.width(),
                     pixels.height(),
                     KITTY_IMAGE_ID,
@@ -124,6 +141,18 @@ impl GraphicRenderer {
     }
 }
 
+fn is_ghostty_terminal(
+    term_program: Option<&std::ffi::OsStr>,
+    term: Option<&std::ffi::OsStr>,
+) -> bool {
+    term_program.is_some_and(|value| value.to_string_lossy().eq_ignore_ascii_case("ghostty"))
+        || term.is_some_and(|value| {
+            value
+                .to_string_lossy()
+                .eq_ignore_ascii_case("xterm-ghostty")
+        })
+}
+
 impl Renderer for GraphicRenderer {
     fn setup(&mut self, _src_width: u32, _src_height: u32) {
         self.enter_screen();
@@ -146,7 +175,7 @@ impl Drop for GraphicRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{GraphicRenderer, KITTY_IMAGE_ID, KITTY_PLACEMENT_ID};
+    use super::{GraphicRenderer, KITTY_IMAGE_ID, KITTY_PLACEMENT_ID, is_ghostty_terminal};
     use base64::prelude::{BASE64_STANDARD, Engine as _};
     use flate2::read::ZlibDecoder;
     use image::{DynamicImage, Rgb, RgbImage};
@@ -154,7 +183,7 @@ mod tests {
 
     #[test]
     fn kitty_stream_reuses_image_and_placement_ids() {
-        let mut renderer = GraphicRenderer::new(0);
+        let mut renderer = GraphicRenderer::with_compression(0, true);
         renderer.config.width = Some(1);
         renderer.config.height = Some(1);
         let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(2, 2, Rgb([1, 2, 3])));
@@ -174,7 +203,7 @@ mod tests {
 
     #[test]
     fn kitty_stream_compresses_rgb_payload_with_zlib() {
-        let renderer = GraphicRenderer::new(0);
+        let renderer = GraphicRenderer::with_compression(0, true);
         let img = DynamicImage::ImageRgb8(RgbImage::from_fn(4, 4, |x, y| {
             Rgb([x as u8, y as u8, (x + y) as u8])
         }));
@@ -204,8 +233,46 @@ mod tests {
     }
 
     #[test]
+    fn kitty_stream_sends_uncompressed_rgb_when_compression_is_disabled() {
+        let renderer = GraphicRenderer::with_compression(0, false);
+        let img = DynamicImage::ImageRgb8(RgbImage::from_fn(4, 4, |x, y| {
+            Rgb([x as u8, y as u8, (x + y) as u8])
+        }));
+        let expected = img.to_rgb8().into_raw();
+        let mut output = Vec::new();
+
+        renderer.render_kitty(&img, &mut output).unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        let command = output.split_once("\x1b_G").unwrap().1;
+        let (control, payload) = command.split_once(';').unwrap();
+        let payload = payload.split_once("\x1b\\").unwrap().0;
+        let decoded = BASE64_STANDARD.decode(payload).unwrap();
+
+        assert_eq!((control.contains("o=z"), decoded), (false, expected));
+    }
+
+    #[test]
+    fn ghostty_terminal_detection_accepts_term_program() {
+        assert!(is_ghostty_terminal(Some("Ghostty".as_ref()), None));
+    }
+
+    #[test]
+    fn ghostty_terminal_detection_accepts_term() {
+        assert!(is_ghostty_terminal(None, Some("xterm-ghostty".as_ref())));
+    }
+
+    #[test]
+    fn ghostty_terminal_detection_rejects_other_terminals() {
+        assert!(!is_ghostty_terminal(
+            Some("iTerm.app".as_ref()),
+            Some("xterm-256color".as_ref())
+        ));
+    }
+
+    #[test]
     fn kitty_stream_silences_every_image_chunk() {
-        let renderer = GraphicRenderer::new(0);
+        let renderer = GraphicRenderer::with_compression(0, true);
         let img = DynamicImage::ImageRgb8(RgbImage::from_fn(64, 64, |x, y| {
             Rgb([x as u8, y as u8, (x ^ y) as u8])
         }));

@@ -1,5 +1,7 @@
 use super::{Frame, Renderer};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
+use flate2::Compression;
+use flate2::write::ZlibEncoder;
 use image::{DynamicImage, RgbImage};
 use std::io::{self, IsTerminal, Write};
 
@@ -70,7 +72,13 @@ impl GraphicRenderer {
         let columns = display_size.width();
         let rows = display_size.height().div_ceil(2);
         let pixels = img.to_rgb8();
-        let encoded = BASE64_STANDARD.encode(pixels.as_raw());
+        let mut encoder = ZlibEncoder::new(
+            Vec::with_capacity(pixels.as_raw().len() / 2),
+            Compression::fast(),
+        );
+        encoder.write_all(pixels.as_raw())?;
+        let compressed = encoder.finish()?;
+        let encoded = BASE64_STANDARD.encode(compressed);
         let chunks = encoded.as_bytes().chunks(KITTY_CHUNK_SIZE);
         let chunk_count = chunks.len();
         let mut command = Vec::with_capacity(encoded.len() + chunk_count * 32 + 256);
@@ -81,7 +89,7 @@ impl GraphicRenderer {
             if index == 0 {
                 write!(
                     command,
-                    "\x1b_Ga=t,f=24,t=d,s={},v={},i={},q=2,N=1,m={};",
+                    "\x1b_Ga=t,f=24,t=d,o=z,s={},v={},i={},q=2,N=1,m={};",
                     pixels.width(),
                     pixels.height(),
                     KITTY_IMAGE_ID,
@@ -139,7 +147,10 @@ impl Drop for GraphicRenderer {
 #[cfg(test)]
 mod tests {
     use super::{GraphicRenderer, KITTY_IMAGE_ID, KITTY_PLACEMENT_ID};
+    use base64::prelude::{BASE64_STANDARD, Engine as _};
+    use flate2::read::ZlibDecoder;
     use image::{DynamicImage, Rgb, RgbImage};
+    use std::io::Read;
 
     #[test]
     fn kitty_stream_reuses_image_and_placement_ids() {
@@ -152,13 +163,44 @@ mod tests {
         renderer.render_kitty(&img, &mut output).unwrap();
 
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains(&format!("a=t,f=24,t=d,s=2,v=2,i={KITTY_IMAGE_ID}")));
+        assert!(output.contains(&format!("a=t,f=24,t=d,o=z,s=2,v=2,i={KITTY_IMAGE_ID}")));
         assert!(output.contains(&format!(
             "a=p,i={KITTY_IMAGE_ID},p={KITTY_PLACEMENT_ID},c=1,r=1"
         )));
         assert!(!output.contains("a=T"));
         assert!(output.starts_with("\x1b[?2026h"));
         assert!(output.ends_with("\x1b[?2026l"));
+    }
+
+    #[test]
+    fn kitty_stream_compresses_rgb_payload_with_zlib() {
+        let renderer = GraphicRenderer::new(0);
+        let img = DynamicImage::ImageRgb8(RgbImage::from_fn(4, 4, |x, y| {
+            Rgb([x as u8, y as u8, (x + y) as u8])
+        }));
+        let expected = img.to_rgb8().into_raw();
+        let mut output = Vec::new();
+
+        renderer.render_kitty(&img, &mut output).unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        let payload = output
+            .split_once("\x1b_G")
+            .unwrap()
+            .1
+            .split_once(';')
+            .unwrap()
+            .1
+            .split_once("\x1b\\")
+            .unwrap()
+            .0;
+        let compressed = BASE64_STANDARD.decode(payload).unwrap();
+        let mut decoded = Vec::new();
+        ZlibDecoder::new(compressed.as_slice())
+            .read_to_end(&mut decoded)
+            .unwrap();
+
+        assert_eq!(decoded, expected);
     }
 
     #[test]

@@ -9,6 +9,7 @@ permissions:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     strategy:
       matrix:
         include:
@@ -41,6 +42,7 @@ jobs:
   publish-crates:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-infrastructure
@@ -51,6 +53,7 @@ jobs:
   publish-npm:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-infrastructure
@@ -80,6 +83,7 @@ jobs:
       - publish-crates
       - publish-npm
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/download-artifact@v8
         with:

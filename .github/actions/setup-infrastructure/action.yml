@@ -13,3 +13,4 @@ runs:
           rust = 'latest'
           yq = 'latest'
           npm = 'latest'
+    - uses: Swatinem/rust-cache@v2

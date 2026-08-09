@@ -41,6 +41,17 @@ asobou 'Super Mario Bros.zip'
 
 Asobou detects the system, ensures a suitable emulator is available, picks the best renderer your terminal supports, and starts the game.
 
+## Prerequisites
+
+- Asobou works best with terminals that support [Terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/). Here is an incomplete list of supported terminals (sorted alphabetically):
+  - [Ghostty](https://ghostty.org/) (Linux, macOS)
+  - [iTerm2](https://iterm2.com/) (macOS)
+  - [Kitty](https://sw.kovidgoyal.net/kitty/) (Linux, macOS)
+  - [Rio Terminal](https://rioterm.com/) (Linux, macOS, Windows)
+  - [WezTerm](https://wezfurlong.org/wezterm/) (Linux, macOS, Windows)
+- Asobou requires an active internet connection to download emulator binaries from http://buildbot.libretro.com/ when needed.
+- Asobou requires you to provide the game file(s), as it does not bundle any game content.
+
 ## Installation
 
 - You do not necessarily need to install it if you just want a quick try with npx:
@@ -121,9 +132,9 @@ Here are some typical usage examples:
 
 ## Configuration
 
-asobou loads the first applicable config path:
+Asobou loads the first applicable config path:
 
-1. The exact path in `ASOBOU_CONFIG`
+1. The exact path in the `ASOBOU_CONFIG` environment variable
 2. `$XDG_CONFIG_HOME/asobou/config.toml`
 3. `~/.config/asobou/config.toml` on Linux and macOS
 4. `%APPDATA%\asobou\config.toml` on Windows
@@ -219,6 +230,20 @@ save_on_exit = false # Save a state when exiting cleanly
 data_dir = "~/asobou-data" # Override the data base (cores, save states)
 cache_dir = "~/asobou-cache" # Override the cache base (brew downloads)
 ```
+
+## Under the hood
+
+Asobou is a [libretro frontend](https://docs.libretro.com/development/frontends/): the emulation itself is performed by libretro cores, shared libraries such as `nestopia_libretro.so` (for Linux) / `snes9x_libretro.dylib` (for macOS) / `mgba_libretro.dll` (for Windows), which Asobou locates, loads, and drives, turning their output into something a terminal can display.
+
+Emulation and rendering run on separate threads: the emulation thread captures video only when the renderer requests a frame, and hands the latest frame to the render thread through a mailbox. The active renderer then draws it:
+- `graphic` — sends the frame as a PNG via the [Terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
+- `block` — downsamples the frame into colored half-block cells(▀)
+- `ascii` — maps pixel brightness to ASCII characters
+
+## Credits
+
+- [libretro](https://www.libretro.com/) and its friends (the emulation cores)
+- [Terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/) proposed by [Kitty](https://sw.kovidgoyal.net/kitty/)
 
 ## License
 

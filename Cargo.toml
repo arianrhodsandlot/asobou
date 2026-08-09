@@ -1,5 +1,6 @@
 [package]
-keywords = ["ascii-art", "cli", "command-line", "command-line-tool", "emulation", "emulator", "emulators", "libretro" "retro-gaming", "terminal"]name = "asobou"
+keywords = ["ascii-art", "cli", "command-line", "command-line-tool", "emulation", "emulator", "emulators", "libretro", "retro-gaming", "terminal"]
+name = "asobou"
 edition = "2024"
 rust-version = "1.97"
 description = "Play retro games directly in your terminal"

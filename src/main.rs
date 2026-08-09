@@ -238,7 +238,10 @@ enum CoreAction {
 
 #[derive(Subcommand)]
 enum StateAction {
-    #[command(about = "List managed save states (filter by ROM and core)", visible_alias = "l")]
+    #[command(
+        about = "List managed save states (filter by ROM and core)",
+        visible_alias = "l"
+    )]
     List {
         #[arg(help = "Filter by the complete ROM filename")]
         rom: Option<String>,

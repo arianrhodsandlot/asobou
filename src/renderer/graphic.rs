@@ -176,7 +176,7 @@ impl Drop for GraphicRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{fit_cell_size, GraphicRenderer, KITTY_IMAGE_ID, KITTY_PLACEMENT_ID};
+    use super::{GraphicRenderer, KITTY_IMAGE_ID, KITTY_PLACEMENT_ID, fit_cell_size};
     use base64::prelude::{BASE64_STANDARD, Engine as _};
     use flate2::read::ZlibDecoder;
     use image::{DynamicImage, Rgb, RgbImage};

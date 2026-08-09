@@ -62,7 +62,7 @@ impl AudioBackend for CpalBackend {
         let device = self.device.as_ref().unwrap();
         let supported_config = self.config.as_ref().unwrap();
         let sample_format = supported_config.sample_format();
-        let config: cpal::StreamConfig = supported_config.clone().into();
+        let config: cpal::StreamConfig = (*supported_config).into();
         let channels = config.channels as usize;
         let target_rate = config.sample_rate;
         let ring = HeapRb::<i16>::new(target_rate as usize * 2 / 10);

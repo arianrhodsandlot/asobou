@@ -2,6 +2,7 @@ use crossterm::event::{
     self, DisableFocusChange, EnableFocusChange, Event, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
+use gilrs::{Axis, Button, EventType, GamepadId};
 use std::io::{self, Write};
 use std::mem;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,25 @@ const TERMINAL_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const STATUS_MESSAGE_DURATION: Duration = Duration::from_secs(2);
 const RESET_STYLE: &str = "\x1b[0m";
 const DIM_STYLE: &str = "\x1b[2m";
+
+const GAMEPAD_BUTTONS: [Button; 16] = [
+    Button::South,
+    Button::East,
+    Button::North,
+    Button::West,
+    Button::LeftTrigger,
+    Button::RightTrigger,
+    Button::LeftTrigger2,
+    Button::RightTrigger2,
+    Button::Select,
+    Button::Start,
+    Button::LeftThumb,
+    Button::RightThumb,
+    Button::DPadUp,
+    Button::DPadDown,
+    Button::DPadLeft,
+    Button::DPadRight,
+];
 
 struct LatestFrameMailbox {
     state: Mutex<LatestFrameState>,
@@ -255,6 +275,61 @@ fn drain_pending_terminal_events() {
             Err(_) => break,
         }
     }
+}
+
+fn poll_gamepads(
+    gamepads: &mut gilrs::Gilrs,
+    input: &mut crate::input::InputState,
+    active_gamepad: &mut Option<GamepadId>,
+) {
+    while let Some(event) = gamepads.next_event() {
+        match event.event {
+            EventType::Connected => {
+                if active_gamepad.is_none() {
+                    *active_gamepad = Some(event.id);
+                }
+            }
+            EventType::Disconnected => {
+                if *active_gamepad == Some(event.id) {
+                    *active_gamepad = None;
+                    input.clear_gamepad();
+                }
+            }
+            // Only deliberate mapped button presses claim the active slot;
+            // axis traffic (stick jitter, trigger drift) on a second pad
+            // must not steal control from the pad in use.
+            EventType::ButtonPressed(button, _)
+                if crate::input::default_gamepad_button(button).is_some() =>
+            {
+                *active_gamepad = Some(event.id);
+            }
+            _ => {}
+        }
+    }
+    gamepads.inc();
+
+    let id = active_gamepad.or_else(|| gamepads.gamepads().next().map(|(id, _)| id));
+    let Some(id) = id else {
+        return;
+    };
+    let Some(gamepad) = gamepads.connected_gamepad(id) else {
+        return;
+    };
+
+    let mut buttons = [false; crate::input::JOYPAD_BUTTON_COUNT];
+    for button in GAMEPAD_BUTTONS {
+        if gamepad.is_pressed(button)
+            && let Some(index) = crate::input::default_gamepad_button(button)
+        {
+            buttons[index] = true;
+        }
+    }
+    crate::input::apply_left_stick(
+        &mut buttons,
+        gamepad.value(Axis::LeftStickX),
+        gamepad.value(Axis::LeftStickY),
+    );
+    input.update_gamepad(buttons);
 }
 
 fn rewind_run_frame(core: &crate::emulation::libretro::Core, frame_mailbox: &LatestFrameMailbox) {
@@ -531,6 +606,14 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             input_bindings,
             terminal.release_events_supported,
         );
+        let mut gamepads = match gilrs::Gilrs::new() {
+            Ok(gamepads) => Some(gamepads),
+            Err(error) => {
+                eprintln!("Gamepad input unavailable: {error}");
+                None
+            }
+        };
+        let mut active_gamepad: Option<GamepadId> = None;
         let mut ghostty_ctrl_c =
             crate::terminal::is_ghostty().then(GhosttyCtrlCWorkaround::default);
         let mut input_error = None;
@@ -576,6 +659,13 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
                         break;
                     }
                 }
+            }
+
+            if let Some(gamepads) = gamepads.as_mut() {
+                poll_gamepads(gamepads, &mut input, &mut active_gamepad);
+            }
+            if input.quit_requested() {
+                RUNNING.store(false, Ordering::SeqCst);
             }
 
             input.expire(Instant::now());

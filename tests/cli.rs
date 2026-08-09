@@ -62,7 +62,11 @@ fn run_with_config_env(
 }
 
 fn write_state(data_home: &Path, core: &str, game: &str, name: &str) -> std::path::PathBuf {
-    let dir = data_home.join("asobou").join("states").join(core).join(game);
+    let dir = data_home
+        .join("asobou")
+        .join("states")
+        .join(core)
+        .join(game);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(name);
     // `state list` only inspects filenames, so the contents can be anything.

@@ -353,6 +353,22 @@ impl Default for InputBindings {
                     key_name: "rshift".into(),
                     button: BUTTON_SELECT,
                 },
+                Binding {
+                    key: InputKey {
+                        code: KeyCode::Char('q'),
+                        keypad: false,
+                    },
+                    key_name: "q".into(),
+                    button: BUTTON_L,
+                },
+                Binding {
+                    key: InputKey {
+                        code: KeyCode::Char('w'),
+                        keypad: false,
+                    },
+                    key_name: "w".into(),
+                    button: BUTTON_R,
+                },
             ],
             quit: InputKey {
                 code: KeyCode::Esc,
@@ -883,6 +899,8 @@ mod tests {
                 KeyCode::Modifier(ModifierKeyCode::RightShift),
                 BUTTON_SELECT,
             ),
+            (KeyCode::Char('q'), BUTTON_L),
+            (KeyCode::Char('w'), BUTTON_R),
         ];
 
         for (code, expected_button) in cases {
@@ -1148,7 +1166,7 @@ mod tests {
 
         assert_eq!(
             status,
-            "↑-up ↓-down ←-left →-right Select-rshift Start-enter X-s Y-a A-x B-z"
+            "↑-up ↓-down ←-left →-right Select-rshift Start-enter L1-q R1-w X-s Y-a A-x B-z"
         );
     }
 

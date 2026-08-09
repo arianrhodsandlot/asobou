@@ -139,9 +139,7 @@ Asobou loads the first applicable config path:
 3. `~/.config/asobou/config.toml` on Linux and macOS
 4. `%APPDATA%\asobou\config.toml` on Windows
 
-The config file is optional and an omitted setting keeps its default. Every
-value in the example below is a default. Explicit command-line values override
-configuration values.
+The config file is optional and an omitted setting keeps its default. Explicit command-line values override configuration values.
 
 ```toml
 [input]
@@ -174,14 +172,14 @@ x = "s"
 y = "a"
 start = "enter"
 select = "rshift"
+l = "q"
+r = "w"
 quit = "escape"
 rewind = "r" # Hold to rewind
 save_state = "f2" # Save a new state to data_dir
 load_state = "f4" # Load the newest state
 
-# Optional shoulder buttons, unbound by default:
-# l = "q"
-# r = "w"
+# Optional buttons, unbound by default:
 # l2 = "e"
 # r2 = "u"
 # l3 = "t"
@@ -236,6 +234,7 @@ cache_dir = "~/asobou-cache" # Override the cache base (brew downloads)
 Asobou is a [libretro frontend](https://docs.libretro.com/development/frontends/): the emulation itself is performed by libretro cores, shared libraries such as `nestopia_libretro.so` (for Linux) / `snes9x_libretro.dylib` (for macOS) / `mgba_libretro.dll` (for Windows), which Asobou locates, loads, and drives, turning their output into something a terminal can display.
 
 Emulation and rendering run on separate threads: the emulation thread captures video only when the renderer requests a frame, and hands the latest frame to the render thread through a mailbox. The active renderer then draws it:
+
 - `graphic` — sends the frame as a PNG via the [Terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
 - `block` — downsamples the frame into colored half-block cells(▀)
 - `ascii` — maps pixel brightness to ASCII characters

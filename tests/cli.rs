@@ -547,9 +547,15 @@ fn config_list_shows_supported_keys_values_and_sources() {
         .unwrap();
     assert!(resume.contains("false"));
     assert!(resume.ends_with("default"));
-    let optional = stdout
+    let l_default = stdout
         .lines()
         .find(|line| line.starts_with("input.l "))
+        .unwrap();
+    assert!(l_default.contains("q"));
+    assert!(l_default.ends_with("default"));
+    let optional = stdout
+        .lines()
+        .find(|line| line.starts_with("input.l2 "))
         .unwrap();
     assert!(optional.contains("<unset>"));
     assert!(optional.ends_with("default"));
@@ -590,6 +596,14 @@ fn config_get_prints_effective_values() {
     assert_eq!(stdout, "false\n");
 
     let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "input.l"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "q\n");
+
+    let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "input.r"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "w\n");
+
+    let (stdout, stderr, code) = run_with_config(&config, &["config", "get", "input.l2"]);
     assert_ne!(code, 0);
     assert!(stdout.is_empty());
     assert!(stderr.contains("is unset"));
@@ -734,7 +748,7 @@ fn config_unset_restores_defaults_and_is_idempotent() {
 
     let (stdout, stderr, code) = run_with_config(&config, &["config", "unset", "input.l"]);
     assert_eq!(code, 0, "{stderr}");
-    assert_eq!(stdout, "input.l = <unset>\n");
+    assert_eq!(stdout, "input.l = q\n");
     assert!(!std::fs::read_to_string(&config).unwrap().contains("l ="));
 }
 

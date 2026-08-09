@@ -54,81 +54,87 @@ Asobou detects the system, ensures a suitable emulator is available, picks the b
 
 ## Installation
 
-- You do not necessarily need to install it if you just want a quick try with npx:
+You do not necessarily need to install it if you just want a quick try with [npx](https://docs.npmjs.com/cli/v12/commands/npx):
 
-  ```sh
-  npx asobou
-  ```
+```sh
+npx asobou
+```
 
-- From npm:
+From [npm](https://www.npmjs.com/package/asobou):
 
-  ```sh
-  npm install asobou -g
-  ```
+```sh
+npm install asobou -g
+```
 
-- From crates.io:
+From [crates.io](https://crates.io/crates/asobou):
 
-  ```sh
-  cargo install asobou
-  ```
+```sh
+cargo install asobou
+```
+
+With [mise](https://mise.jdx.dev/):
+
+```sh
+mise use github:arianrhodsandlot/asobou -g
+```
 
 ## Usage
 
 Here are some typical usage examples:
 
-- Start a game
+Start a game
 
-  ```sh
-  asobou 'Super Mario Bros.zip'
-  ```
+```sh
+asobou 'Super Mario Bros.zip'
+```
 
-- Start a game and render as ASCII characters
+Start a game and render as ASCII characters
 
-  ```sh
-  asobou 'Streets of Rage 2.md' --renderer=ascii
-  ```
+```sh
+asobou 'Streets of Rage 2.md' --renderer=ascii
+```
 
-- Run with an explicit core
+Run with an explicit core
 
-  ```sh
-  asobou 'Super Castlevania IV.zip' --core=snes9x
-  ```
+```sh
+asobou 'Super Castlevania IV.zip' --core=snes9x
+```
 
-- Load a save state at startup
+Load a save state at startup
 
-  ```sh
-  asobou 'Super Metroid.sfc' --state=~/backup.state
-  ```
+```sh
+asobou 'Super Metroid.sfc' --state=~/backup.state
+```
 
-- Load the latest managed state at startup
+Load the latest managed state at startup
 
-  ```sh
-  asobou 'Super Metroid.sfc' --resume
-  ```
+```sh
+asobou 'Super Metroid.sfc' --resume
+```
 
-- Download and play a homebrew game
+Download and play a homebrew game
 
-  ```sh
-  asobou brew flappybird.nes
-  ```
+```sh
+asobou brew flappybird.nes
+```
 
-- Install a libretro core
+Install a libretro core
 
-  ```sh
-  asobou core install genesis_plus_gx
-  ```
+```sh
+asobou core install genesis_plus_gx
+```
 
-- Set a configuration value
+Set a configuration value
 
-  ```sh
-  asobou config set rewind.buffer_size_mb 64
-  ```
+```sh
+asobou config set rewind.buffer_size_mb 64
+```
 
-- List saved states, filtered
+List saved states, filtered
 
-  ```sh
-  asobou state list 'Pokemon Emerald.gba' --core=mgba
-  ```
+```sh
+asobou state list 'Pokemon Emerald.gba' --core=mgba
+```
 
 ## Configuration
 

@@ -1,6 +1,18 @@
 {
   "name": "asobou-linux-arm64-gnu",
   "description": "Platform binary for asobou on Linux arm64 with glibc",
+  "keywords": [
+    "ascii-art",
+    "cli",
+    "command-line",
+    "command-line-tool",
+    "emulation",
+    "emulator",
+    "emulators",
+    "libretro",
+    "retro-gaming",
+    "terminal"
+  ],
   "homepage": "https://github.com/arianrhodsandlot/asobou",
   "bugs": {
     "url": "https://github.com/arianrhodsandlot/asobou/issues",

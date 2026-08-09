@@ -1,6 +1,18 @@
 {
   "name": "asobou",
   "description": "Play retro games directly in your terminal",
+  "keywords": [
+    "ascii-art",
+    "cli",
+    "command-line",
+    "command-line-tool",
+    "emulation",
+    "emulator",
+    "emulators",
+    "libretro",
+    "retro-gaming",
+    "terminal"
+  ],
   "homepage": "https://github.com/arianrhodsandlot/asobou",
   "bugs": {
     "url": "https://github.com/arianrhodsandlot/asobou/issues",

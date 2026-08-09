@@ -26,10 +26,10 @@ use std::path::PathBuf;
   asobou 'Super Castlevania IV.zip' --core=snes9x     Run with an explicit core
   asobou 'Super Metroid.sfc' --state=~/backup.state   Load a save state at startup
   asobou 'Super Metroid.sfc' --resume                 Load the latest managed state at startup
-  asobou brew flappybird.nes                          Download and play a homebrew game
   asobou core install genesis_plus_gx                 Install a libretro core
   asobou config set rewind.buffer_size_mb 64          Set a configuration value
-  asobou state list 'Pokemon Emerald.gba' --core=mgba List saved states, filtered"
+  asobou state list 'Pokemon Emerald.gba' --core=mgba List saved states, filtered
+  asobou brew flappybird.nes                          Download and play a homebrew game from https://retrobrews.github.io/"
 )]
 struct Args {
     #[command(subcommand)]
@@ -176,7 +176,7 @@ enum Command {
         arg_required_else_help = true,
         after_help = "Downloads a supported Retrobrews homebrew ROM on first use and reuses it from the local cache thereafter.
 
-Supported extensions: .gbc, .rom, .nes, .sms, .gba, .sfc, .d64, .tap.
+Supported extensions: .gbc, .rom, .nes, .sms, .gba, .sfc, .d64, .tap. ROMs will be downloaded from corresponding Retrobrews repositories (https://github.com/retrobrews/nes-games for .nes, for example).
 
 Examples:
   asobou brew flappybird.nes

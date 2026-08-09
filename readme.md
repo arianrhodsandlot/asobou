@@ -112,12 +112,6 @@ Load the latest managed state at startup
 asobou 'Super Metroid.sfc' --resume
 ```
 
-Download and play a homebrew game
-
-```sh
-asobou brew flappybird.nes
-```
-
 Install a libretro core
 
 ```sh
@@ -136,6 +130,18 @@ List saved states, filtered
 asobou state list 'Pokemon Emerald.gba' --core=mgba
 ```
 
+Download and play a homebrew game from https://retrobrews.github.io/
+
+```sh
+asobou brew flappybird.nes
+```
+
+Print help
+
+```sh
+asobou --help
+```
+
 ## Configuration
 
 Asobou loads the first applicable config path:
@@ -148,6 +154,14 @@ Asobou loads the first applicable config path:
 The config file is optional and an omitted setting keeps its default. Explicit command-line values override configuration values.
 
 ```toml
+[audio]
+muted = false # Disable game audio when true
+
+[display]
+fps = 60 # Maximum terminal refresh rate, from 1 to 240
+renderer = "auto" # auto, graphic, block, ascii
+primary_screen = false # Use the primary buffer when true
+
 [input]
 # Each input takes one standalone key, and a key cannot be assigned to more than one input.
 # Keys follow the RetroArch conventions. Printable characters are written directly; the other supported names are:
@@ -184,30 +198,24 @@ quit = "escape"
 rewind = "r" # Hold to rewind
 save_state = "f2" # Save a new state to data_dir
 load_state = "f4" # Load the newest state
-
 # Optional buttons, unbound by default:
 # l2 = "e"
 # r2 = "u"
 # l3 = "t"
 # r3 = "y"
 
-[display]
-renderer = "auto" # auto, graphic, block, ascii, or debug
-fps = 60 # Maximum terminal refresh rate, from 1 to 240
-primary_screen = false # Use the primary buffer when true
-
-[audio]
-muted = false # Disable game audio when true
-
-[status]
-# The status text is centered and dimmed over the bottom of the rendered frame.
-# Set `status.enabled` to `false` to hide both lines, or toggle `gamepad` and
-# `controls` independently. Save and load notifications remain visible when the
-# keybinding status is hidden. Notifications are anchored to the bottom-left and
-# do not change the centered keybindings' position.
-enabled = true # Show the on-screen keybinding status
-gamepad = true # Show gamepad inputs on the upper status line
-controls = true # Show save, load, rewind, and exit on the lower line
+[paths]
+# Data lives in `$XDG_DATA_HOME/asobou` and cache in `$XDG_CACHE_HOME/asobou` by
+# default (`~/Library/Application Support/asobou` and `~/Library/Caches/asobou` on
+# macOS, `~/.local/share/asobou` and `~/.cache/asobou` on Linux). `paths.data_dir`
+# and `paths.cache_dir` override the base directory: cores and save states go
+# under `data_dir/cores` and `data_dir/states`, brew downloads under
+# `cache_dir/brew`. Values must be absolute or start with `~/`. These settings
+# take precedence over the `XDG_DATA_HOME` and `XDG_CACHE_HOME` environment
+# variables, which are used only when the corresponding key is unset (an empty
+# variable counts as unset).
+cache_dir = "~/asobou-cache" # Override the cache base (brew downloads)
+data_dir = "~/asobou-data" # Override the data base (cores, save states)
 
 [rewind]
 # Rewind steps back while the rewind key is held. A higher `granularity` uses
@@ -220,19 +228,17 @@ buffer_size_mb = 20 # Memory cap for stored snapshots
 
 [state]
 save_on_exit = false # Save a state when exiting cleanly
+resume = false # Resume the last state on startup
 
-[paths]
-# Data lives in `$XDG_DATA_HOME/asobou` and cache in `$XDG_CACHE_HOME/asobou` by
-# default (`~/Library/Application Support/asobou` and `~/Library/Caches/asobou` on
-# macOS, `~/.local/share/asobou` and `~/.cache/asobou` on Linux). `paths.data_dir`
-# and `paths.cache_dir` override the base directory: cores and save states go
-# under `data_dir/cores` and `data_dir/states`, brew downloads under
-# `cache_dir/brew`. Values must be absolute or start with `~/`. These settings
-# take precedence over the `XDG_DATA_HOME` and `XDG_CACHE_HOME` environment
-# variables, which are used only when the corresponding key is unset (an empty
-# variable counts as unset).
-data_dir = "~/asobou-data" # Override the data base (cores, save states)
-cache_dir = "~/asobou-cache" # Override the cache base (brew downloads)
+[status]
+# The status text is centered and dimmed over the bottom of the rendered frame.
+# Set `status.enabled` to `false` to hide both lines, or toggle `gamepad` and
+# `controls` independently. Save and load notifications remain visible when the
+# keybinding status is hidden. Notifications are anchored to the bottom-left and
+# do not change the centered keybindings' position.
+controls = true # Show save, load, rewind, and exit on the lower line
+enabled = true # Show the on-screen keybinding status
+gamepad = true # Show gamepad inputs on the upper status line
 ```
 
 ## Under the hood
@@ -249,6 +255,10 @@ Emulation and rendering run on separate threads: the emulation thread captures v
 
 - [libretro](https://www.libretro.com/) and its friends (the emulation cores)
 - [Terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/) proposed by [Kitty](https://sw.kovidgoyal.net/kitty/)
+
+## Alternatives
+
+- [retroemu](https://github.com/monteslu/retroemu)
 
 ## License
 

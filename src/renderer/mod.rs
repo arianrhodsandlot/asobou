@@ -1,7 +1,6 @@
 pub mod ascii;
 pub mod auto;
 pub mod block;
-pub mod debug;
 pub mod graphic;
 
 use serde::Deserialize;
@@ -14,7 +13,6 @@ pub enum RendererMode {
     Graphic,
     Block,
     Ascii,
-    Debug,
 }
 
 impl RendererMode {
@@ -24,7 +22,6 @@ impl RendererMode {
             Self::Graphic => "graphic",
             Self::Block => "block",
             Self::Ascii => "ascii",
-            Self::Debug => "debug",
         }
     }
 }
@@ -43,7 +40,6 @@ pub trait Renderer: Send {
 
 pub fn create(
     mode: RendererMode,
-    rom_path: &std::path::Path,
     no_alt_screen: bool,
     reserved_rows: usize,
 ) -> io::Result<Box<dyn Renderer>> {
@@ -52,13 +48,6 @@ pub fn create(
         explicit => explicit,
     };
     match mode {
-        RendererMode::Debug => {
-            let stem = rom_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown");
-            Ok(Box::new(debug::DebugRenderer::new(stem)))
-        }
         RendererMode::Graphic => Ok(Box::new(graphic::GraphicRenderer::new(reserved_rows))),
         RendererMode::Block => Ok(Box::new(block::BlockRenderer::new(no_alt_screen))),
         RendererMode::Ascii => Ok(Box::new(ascii::AsciiRenderer::new(no_alt_screen))),

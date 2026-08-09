@@ -94,6 +94,8 @@ jobs:
           pattern: release-*
           path: release
           merge-multiple: true
+      - run: shasum -a 256 * > SHA256SUMS
+        working-directory: release
       - uses: softprops/action-gh-release@v3
         if: startsWith(github.ref, 'refs/tags/')
         with:

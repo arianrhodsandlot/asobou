@@ -72,11 +72,19 @@ From [crates.io](https://crates.io/crates/asobou):
 cargo install asobou
 ```
 
+With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall):
+
+```sh
+cargo binstall asobou
+```
+
 With [mise](https://mise.jdx.dev/):
 
 ```sh
 mise use github:arianrhodsandlot/asobou -g
 ```
+
+You can also manually download the binary from the [releases page](https://github.com/arianrhodsandlot/asobou/releases). It's a standalone executable that does not require any additional dependencies.
 
 ## Usage
 
@@ -214,8 +222,8 @@ load_state = "f4" # Load the newest state
 # take precedence over the `XDG_DATA_HOME` and `XDG_CACHE_HOME` environment
 # variables, which are used only when the corresponding key is unset (an empty
 # variable counts as unset).
-cache_dir = "~/asobou-cache" # Override the cache base (brew downloads)
-data_dir = "~/asobou-data" # Override the data base (cores, save states)
+cache_dir = "~/.asobou/cache" # Override the cache base (brew downloads)
+data_dir = "~/.asobou/data" # Override the data base (cores, save states)
 
 [rewind]
 # Rewind steps back while the rewind key is held. A higher `granularity` uses

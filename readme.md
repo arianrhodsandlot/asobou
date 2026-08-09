@@ -1,15 +1,27 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-white.svg">
-    <img src="docs/images/logo.svg" alt="logo">
+    <img src="docs/images/logo.svg" alt="Asobou logo">
   </picture>
 </p>
 
 ---
 
 <p align="center">
-Play retro games directly in your terminal
+  <a href="license"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
+  <a href="https://github.com/arianrhodsandlot/asobou/actions">
+    <img src="https://img.shields.io/github/actions/workflow/status/arianrhodsandlot/asobou/test.yml" alt="CI" />
+  </a>
+  <a href="https://crates.io/crates/asobou">
+    <img src="https://img.shields.io/crates/v/asobou" alt="crates.io version" />
+  </a>
+  <a href="https://www.npmjs.com/package/asobou"><img src="https://img.shields.io/npm/v/asobou" alt="npm version" /></a>
+  <a href="https://github.com/arianrhodsandlot/asobou/releases">
+    <img src="https://img.shields.io/github/v/release/arianrhodsandlot/asobou" alt="GitHub release" />
+  </a>
 </p>
+
+<p align="center">Play retro games directly in your terminal</p>
 
 <p align="center">
   <img src="docs/images/screenshots/example.gif" alt="example">
@@ -21,16 +33,17 @@ Play retro games directly in your terminal
 
 ## Overview
 
+Asobou is a command-line tool that allows you to play retro games directly in your terminal. Simply run:
+
 ```sh
 asobou 'Super Mario Bros.zip'
 ```
 
-Asobou detects the system, ensures a suitable emulator is available, picks the best
-renderer your terminal supports, and starts the game.
+Asobou detects the system, ensures a suitable emulator is available, picks the best renderer your terminal supports, and starts the game.
 
 ## Installation
 
-- You do not necessarily need to install it if you just want a quick try.
+- You do not necessarily need to install it if you just want a quick try with npx:
 
   ```sh
   npx asobou
@@ -52,59 +65,59 @@ renderer your terminal supports, and starts the game.
 
 Here are some typical usage examples:
 
-### Start a game
+- Start a game
 
-```sh
-asobou 'Super Mario Bros.zip'
-```
+  ```sh
+  asobou 'Super Mario Bros.zip'
+  ```
 
-### Start a game and render as ASCII characters
+- Start a game and render as ASCII characters
 
-```sh
-asobou 'Streets of Rage 2.md' --renderer=ascii
-```
+  ```sh
+  asobou 'Streets of Rage 2.md' --renderer=ascii
+  ```
 
-### Run with an explicit core
+- Run with an explicit core
 
-```sh
-asobou 'Super Castlevania IV.zip' --core=snes9x
-```
+  ```sh
+  asobou 'Super Castlevania IV.zip' --core=snes9x
+  ```
 
-### Load a save state at startup
+- Load a save state at startup
 
-```sh
-asobou 'Super Metroid.sfc' --state=~/backup.state
-```
+  ```sh
+  asobou 'Super Metroid.sfc' --state=~/backup.state
+  ```
 
-### Load the latest managed state at startup
+- Load the latest managed state at startup
 
-```sh
-asobou 'Super Metroid.sfc' --resume
-```
+  ```sh
+  asobou 'Super Metroid.sfc' --resume
+  ```
 
-### Download and play a homebrew game
+- Download and play a homebrew game
 
-```sh
-asobou brew flappybird.nes
-```
+  ```sh
+  asobou brew flappybird.nes
+  ```
 
-### Install a libretro core
+- Install a libretro core
 
-```sh
-asobou core install genesis_plus_gx
-```
+  ```sh
+  asobou core install genesis_plus_gx
+  ```
 
-### Set a configuration value
+- Set a configuration value
 
-```sh
-asobou config set rewind.buffer_size_mb 64
-```
+  ```sh
+  asobou config set rewind.buffer_size_mb 64
+  ```
 
-### List saved states, filtered
+- List saved states, filtered
 
-```sh
-asobou state list 'Pokemon Emerald.gba' --core=mgba
-```
+  ```sh
+  asobou state list 'Pokemon Emerald.gba' --core=mgba
+  ```
 
 ## Configuration
 

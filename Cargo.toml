@@ -1,5 +1,5 @@
 [package]
-name = "asobou"
+keywords = ["ascii-art", "cli", "command-line", "command-line-tool", "emulation", "emulator", "emulators", "libretro" "retro-gaming", "terminal"]name = "asobou"
 edition = "2024"
 rust-version = "1.97"
 description = "Play retro games directly in your terminal"
@@ -7,7 +7,6 @@ license = "MIT"
 repository = "https://github.com/arianrhodsandlot/asobou"
 homepage = "https://github.com/arianrhodsandlot/asobou"
 readme = "readme.md"
-keywords = ["emulator", "libretro", "retro-gaming", "terminal", "cli"]
 categories = ["command-line-utilities", "games"]
 
 [dependencies]

@@ -1,13 +1,8 @@
 [package]
 keywords = [
-  "ascii-art",
   "cli",
   "command-line",
-  "command-line-tool",
-  "emulation",
   "emulator",
-  "emulators",
-  "libretro",
   "retro-gaming",
   "terminal",
 ]

@@ -37,7 +37,9 @@
     "asobou-darwin-arm64": "0.0.0",
     "asobou-darwin-x64": "0.0.0",
     "asobou-linux-arm64-gnu": "0.0.0",
-    "asobou-linux-x64-gnu": "0.0.0"
+    "asobou-linux-x64-gnu": "0.0.0",
+    "asobou-win32-arm64-msvc": "0.0.0",
+    "asobou-win32-x64-msvc": "0.0.0"
   },
   "engines": {
     "node": ">=18"

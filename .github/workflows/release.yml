@@ -64,10 +64,10 @@ jobs:
           merge-multiple: true
       - run: yq -p=json -o=json -i '.version = ("${{ github.ref_name }}" | sub("^v"; "")) | .optionalDependencies[] = ("${{ github.ref_name }}" | sub("^v"; ""))' npm/asobou/package.json
       - run: cp release/asobou-${{ github.ref_name }}-aarch64-apple-darwin npm/asobou-darwin-arm64/asobou
-      - run: cp release/asobou-${{ github.ref_name }}-aarch64-pc-windows-msvc npm/asobou-win32-arm64-msvc/asobou
+      - run: cp release/asobou-${{ github.ref_name }}-aarch64-pc-windows-msvc.exe npm/asobou-win32-arm64-msvc/asobou.exe
       - run: cp release/asobou-${{ github.ref_name }}-aarch64-unknown-linux-gnu npm/asobou-linux-arm64-gnu/asobou
       - run: cp release/asobou-${{ github.ref_name }}-x86_64-apple-darwin npm/asobou-darwin-x64/asobou
-      - run: cp release/asobou-${{ github.ref_name }}-x86_64-pc-windows-msvc npm/asobou-win32-x64-msvc/asobou
+      - run: cp release/asobou-${{ github.ref_name }}-x86_64-pc-windows-msvc.exe npm/asobou-win32-x64-msvc/asobou.exe
       - run: cp release/asobou-${{ github.ref_name }}-x86_64-unknown-linux-gnu npm/asobou-linux-x64-gnu/asobou
       - run: |
           for package in npm/asobou-*; do

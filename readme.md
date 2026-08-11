@@ -29,7 +29,7 @@
 
 > [!note]
 >
-> The game we are using for demonstration here is <i><a href="https://www.romhacking.net/homebrew/1/">Alter Ego</a></i>.
+> The game used in the demonstration above is <i><a href="https://www.romhacking.net/homebrew/1/">Alter Ego</a></i>.
 
 ## Overview
 
@@ -53,18 +53,18 @@ This loads the game _Indivisible on NES_ from https://github.com/retrobrews/nes-
 
 ## Prerequisites
 
-- Asobou works best with terminals that support [Terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/). Here is an incomplete list of supported terminals (sorted alphabetically):
+- Asobou works best with terminals that support [Terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/). Here is a non-exhaustive list of supported terminals (sorted alphabetically):
   - [Ghostty](https://ghostty.org/) (Linux, macOS)
   - [iTerm2](https://iterm2.com/) (macOS)
   - [Kitty](https://sw.kovidgoyal.net/kitty/) (Linux, macOS)
   - [Rio Terminal](https://rioterm.com/) (Linux, macOS, Windows)
   - [WezTerm](https://wezfurlong.org/wezterm/) (Linux, macOS, Windows)
 - Asobou requires an active internet connection to download emulator binaries from https://buildbot.libretro.com/ when needed.
-- Asobou requires you to provide the game file(s), as it does not bundle any game content.
+- Asobou requires you to provide the game ([ROM file](https://en.wikipedia.org/wiki/ROM_image)), as it does not bundle any game content.
 
 ## Installation
 
-You do not necessarily need to install it if you just want a quick try with [npx](https://docs.npmjs.com/cli/v12/commands/npx):
+You do not need to install anything if you just want a quick try — run it with [npx](https://docs.npmjs.com/cli/v12/commands/npx):
 
 ```sh
 npx asobou
@@ -94,7 +94,7 @@ With [mise](https://mise.jdx.dev/):
 mise use github:arianrhodsandlot/asobou -g
 ```
 
-You can also manually download the binary from the [releases page](https://github.com/arianrhodsandlot/asobou/releases). It's a standalone executable that does not require any additional dependencies.
+You can also manually download the binary from the [releases page](https://github.com/arianrhodsandlot/asobou/releases). It is a standalone executable that does not require any additional dependencies.
 
 ## Usage
 
@@ -106,7 +106,7 @@ Start a game
 asobou 'Super Mario Bros.zip'
 ```
 
-Start a game and render as ASCII characters
+Start a game and render it as ASCII characters
 
 ```sh
 asobou 'Streets of Rage 2.md' --renderer=ascii
@@ -169,7 +169,7 @@ Asobou loads the first applicable config path:
 3. `~/.config/asobou/config.toml` on Linux and macOS
 4. `%APPDATA%\asobou\config.toml` on Windows
 
-The config file is optional and an omitted setting keeps its default. Explicit command-line values override configuration values.
+The config file is optional; omitted settings keep their defaults. Explicit command-line values override configuration values.
 
 ```toml
 [audio]
@@ -214,7 +214,7 @@ l = "q"
 r = "w"
 quit = "escape"
 rewind = "r" # Hold to rewind
-save_state = "f2" # Save a new state to data_dir
+save_state = "f2" # Save a new state to `data_dir`
 load_state = "f4" # Load the newest state
 # Optional buttons, unbound by default:
 # l2 = "e"
@@ -261,7 +261,7 @@ gamepad = true # Show gamepad inputs on the upper status line
 
 ## Supported platforms
 
-There are plenty of cores at https://buildbot.libretro.com/ . Following are the tested cores and platforms. They should cover most of the popular ones.
+Many more cores are available at https://buildbot.libretro.com/. The following platforms and default cores are tested and cover most popular systems.
 
 | Platform               | Default Core    |
 | ---------------------- | --------------- |
@@ -277,25 +277,25 @@ There are plenty of cores at https://buildbot.libretro.com/ . Following are the 
 | NES / Famicom          | nestopia        |
 | Neo Geo Pocket (Color) | mednafen_ngp    |
 | Super Nintendo         | snes9x          |
-| Wonderswan (Color)     | mednafen_wswan  |
+| WonderSwan (Color)     | mednafen_wswan  |
 
 Other platforms and cores not listed here may work with Asobou too, but are not tested.
 
-Cores those require GPU acceleration don't work with Asobou.
+Cores that require GPU acceleration do not work with Asobou.
 
 ## Under the hood
 
-Asobou is a [libretro frontend](https://docs.libretro.com/development/frontends/): the emulation itself is performed by libretro cores, shared libraries such as `nestopia_libretro.so` (for Linux) / `snes9x_libretro.dylib` (for macOS) / `mgba_libretro.dll` (for Windows), which Asobou locates, loads, and drives, turning their output into something a terminal can display.
+Asobou is a [libretro frontend](https://docs.libretro.com/development/frontends/): the emulation itself is performed by libretro cores, shared libraries such as `nestopia_libretro.so` on Linux, `snes9x_libretro.dylib` on macOS, or `mgba_libretro.dll` on Windows. Asobou locates, loads, and drives these cores, turning their output into something a terminal can display.
 
 Emulation and rendering run on separate threads: the emulation thread captures video only when the renderer requests a frame, and hands the latest frame to the render thread through a mailbox. The active renderer then draws it:
 
 - `graphic` — sends the frame as raw RGB data, using zlib compression when supported, via the [Terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
-- `block` — downsamples the frame into colored half-block cells(▀)
+- `block` — downsamples the frame into colored half-block cells (▀)
 - `ascii` — maps pixel brightness to ASCII characters
 
 ## Credits
 
-- [libretro](https://www.libretro.com/) and its friends (the emulation cores)
+- [libretro](https://www.libretro.com/) and its emulation cores
 - [Terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/) proposed by [Kitty](https://sw.kovidgoyal.net/kitty/)
 
 ## Alternatives

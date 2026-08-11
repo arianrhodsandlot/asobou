@@ -1,11 +1,5 @@
 [package]
-keywords = [
-  "cli",
-  "command-line",
-  "emulator",
-  "retro-gaming",
-  "terminal",
-]
+keywords = ["cli", "command-line", "emulator", "retro-gaming", "terminal"]
 name = "asobou"
 edition = "2024"
 rust-version = "1.97"

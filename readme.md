@@ -49,6 +49,12 @@ If you do not have a game file handy, you can use `asobou brew` to try one from 
 asobou brew indivisibleonnes.nes
 ```
 
+Or use `npx` to run Asobou without installing it globally:
+
+```sh
+npx asobou brew indivisibleonnes.nes
+```
+
 This loads the game _Indivisible on NES_ from https://github.com/retrobrews/nes-games/blob/master/indivisibleonnes.nes and starts it.
 
 ## Prerequisites

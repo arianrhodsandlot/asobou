@@ -41,6 +41,16 @@ asobou 'Super Mario Bros.zip'
 
 Asobou detects the system, ensures a suitable emulator is available, picks the best renderer your terminal supports, and starts the game.
 
+---
+
+If you do not have a game file handy, you can use `asobou brew` to try one from the internet:
+
+```sh
+asobou brew indivisibleonnes.nes
+```
+
+This loads the game _Indivisible on NES_ from https://github.com/retrobrews/nes-games/blob/master/indivisibleonnes.nes and starts it.
+
 ## Prerequisites
 
 - Asobou works best with terminals that support [Terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/). Here is an incomplete list of supported terminals (sorted alphabetically):
@@ -49,7 +59,7 @@ Asobou detects the system, ensures a suitable emulator is available, picks the b
   - [Kitty](https://sw.kovidgoyal.net/kitty/) (Linux, macOS)
   - [Rio Terminal](https://rioterm.com/) (Linux, macOS, Windows)
   - [WezTerm](https://wezfurlong.org/wezterm/) (Linux, macOS, Windows)
-- Asobou requires an active internet connection to download emulator binaries from http://buildbot.libretro.com/ when needed.
+- Asobou requires an active internet connection to download emulator binaries from https://buildbot.libretro.com/ when needed.
 - Asobou requires you to provide the game file(s), as it does not bundle any game content.
 
 ## Installation
@@ -249,6 +259,30 @@ enabled = true # Show the on-screen keybinding status
 gamepad = true # Show gamepad inputs on the upper status line
 ```
 
+## Supported platforms
+
+There are plenty of cores at https://buildbot.libretro.com/ . Following are the tested cores and platforms. They should cover most of the popular ones.
+
+| Platform               | Default Core    |
+| ---------------------- | --------------- |
+| Atari 2600             | stella          |
+| Atari 5200             | a5200           |
+| Atari 7800             | prosystem       |
+| Atari Lynx             | handy           |
+| Game Boy               | gambatte        |
+| Game Boy Advance       | mgba            |
+| Game Boy Color         | gambatte        |
+| Game Gear              | genesis_plus_gx |
+| Megadrive / Genesis    | genesis_plus_gx |
+| NES / Famicom          | nestopia        |
+| Neo Geo Pocket (Color) | mednafen_ngp    |
+| Super Nintendo         | snes9x          |
+| Wonderswan (Color)     | mednafen_wswan  |
+
+Other platforms and cores not listed here may work with Asobou too, but are not tested.
+
+Cores those require GPU acceleration don't work with Asobou.
+
 ## Under the hood
 
 Asobou is a [libretro frontend](https://docs.libretro.com/development/frontends/): the emulation itself is performed by libretro cores, shared libraries such as `nestopia_libretro.so` (for Linux) / `snes9x_libretro.dylib` (for macOS) / `mgba_libretro.dll` (for Windows), which Asobou locates, loads, and drives, turning their output into something a terminal can display.
@@ -267,6 +301,10 @@ Emulation and rendering run on separate threads: the emulation thread captures v
 ## Alternatives
 
 - [retroemu](https://github.com/monteslu/retroemu)
+
+## Related
+
+You might also be interested in my other project: [Nostalgist.js](https://github.com/arianrhodsandlot/nostalgist), a JavaScript library used for running emulators of retro consoles inside browsers.
 
 ## License
 

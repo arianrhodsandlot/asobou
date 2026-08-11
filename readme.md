@@ -255,7 +255,7 @@ Asobou is a [libretro frontend](https://docs.libretro.com/development/frontends/
 
 Emulation and rendering run on separate threads: the emulation thread captures video only when the renderer requests a frame, and hands the latest frame to the render thread through a mailbox. The active renderer then draws it:
 
-- `graphic` — sends the frame as a PNG via the [Terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
+- `graphic` — sends the frame as raw RGB data, using zlib compression when supported, via the [Terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
 - `block` — downsamples the frame into colored half-block cells(▀)
 - `ascii` — maps pixel brightness to ASCII characters
 

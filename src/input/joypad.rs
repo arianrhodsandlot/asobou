@@ -20,12 +20,12 @@ pub const BUTTON_R2: usize = 13;
 pub const BUTTON_L3: usize = 14;
 pub const BUTTON_R3: usize = 15;
 
-pub const GAMEPAD_STICK_DEADZONE: f32 = 0.5;
+const GAMEPAD_STICK_DEADZONE: f32 = 0.5;
 
 // Positional default mapping: the face buttons line up with the libretro
 // B/A/Y/X diamond (South->B, East->A, West->Y, North->X), matching the
 // RetroArch defaults, and the triggers map to the shoulder pairs.
-pub fn default_gamepad_button(button: Button) -> Option<usize> {
+pub(super) fn default_gamepad_button(button: Button) -> Option<usize> {
     Some(match button {
         Button::South => BUTTON_B,
         Button::East => BUTTON_A,
@@ -47,7 +47,7 @@ pub fn default_gamepad_button(button: Button) -> Option<usize> {
     })
 }
 
-pub fn apply_left_stick(buttons: &mut [bool; JOYPAD_BUTTON_COUNT], x: f32, y: f32) {
+pub(super) fn apply_left_stick(buttons: &mut [bool; JOYPAD_BUTTON_COUNT], x: f32, y: f32) {
     if x > GAMEPAD_STICK_DEADZONE {
         buttons[BUTTON_RIGHT] = true;
     }

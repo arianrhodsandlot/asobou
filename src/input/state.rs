@@ -33,7 +33,7 @@ struct OneShotKey {
     pending: bool,
 }
 
-pub struct InputState {
+pub(super) struct InputState {
     bindings: InputBindings,
     buttons: [bool; JOYPAD_BUTTON_COUNT],
     keys: Vec<KeyState>,
@@ -186,17 +186,38 @@ impl InputState {
     // While Select is held it doubles as a hotkey modifier: Start quits, L1
     // holds rewind, R1 saves and R2 loads. The action buttons are withheld
     // from the core during the combo; Select itself still passes through.
+    #[cfg(test)]
     pub fn update_gamepad(&mut self, buttons: [bool; JOYPAD_BUTTON_COUNT]) {
+        self.update_gamepad_with_edges(buttons, true);
+    }
+
+    pub(super) fn update_gamepad_with_edges(
+        &mut self,
+        buttons: [bool; JOYPAD_BUTTON_COUNT],
+        detect_edges: bool,
+    ) {
         let previous = self.previous_gamepad_buttons;
         let select = buttons[BUTTON_SELECT];
 
-        if select && buttons[BUTTON_START] && !(previous[BUTTON_SELECT] && previous[BUTTON_START]) {
+        if detect_edges
+            && select
+            && buttons[BUTTON_START]
+            && !(previous[BUTTON_SELECT] && previous[BUTTON_START])
+        {
             self.quit_requested = true;
         }
-        if select && buttons[BUTTON_R] && !(previous[BUTTON_SELECT] && previous[BUTTON_R]) {
+        if detect_edges
+            && select
+            && buttons[BUTTON_R]
+            && !(previous[BUTTON_SELECT] && previous[BUTTON_R])
+        {
             self.gamepad_save_pending = true;
         }
-        if select && buttons[BUTTON_R2] && !(previous[BUTTON_SELECT] && previous[BUTTON_R2]) {
+        if detect_edges
+            && select
+            && buttons[BUTTON_R2]
+            && !(previous[BUTTON_SELECT] && previous[BUTTON_R2])
+        {
             self.gamepad_load_pending = true;
         }
         self.gamepad_rewind = self.bindings.rewind_enabled && select && buttons[BUTTON_L];
@@ -344,6 +365,10 @@ impl InputState {
 
     pub fn quit_requested(&self) -> bool {
         self.quit_requested
+    }
+
+    pub(super) fn request_quit(&mut self) {
+        self.quit_requested = true;
     }
 
     pub fn rewind_pressed(&self) -> bool {

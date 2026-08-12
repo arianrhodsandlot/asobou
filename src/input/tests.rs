@@ -1,4 +1,5 @@
 use super::bindings::InputKey;
+use super::joypad::{apply_left_stick, default_gamepad_button};
 use super::state::{INITIAL_HOLD_GRACE, RELEASE_EVENT_FAILSAFE, REPEAT_TIMEOUT};
 use super::*;
 use crossterm::event::{

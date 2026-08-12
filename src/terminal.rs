@@ -28,6 +28,12 @@ pub struct Settings {
     pub status_lines: Vec<String>,
 }
 
+#[derive(Clone, Copy)]
+pub struct InputCapabilities {
+    pub release_events_supported: bool,
+    pub ghostty: bool,
+}
+
 struct LatestFrameMailbox {
     state: Mutex<LatestFrameState>,
     ready: Condvar,
@@ -160,6 +166,7 @@ pub struct TerminalSession {
     thread: Option<RenderThread>,
     lifecycle: Lifecycle,
     release_events_supported: bool,
+    ghostty: bool,
 }
 
 impl TerminalSession {
@@ -237,6 +244,7 @@ impl TerminalSession {
             status_messages,
             thread: Some(thread),
             release_events_supported: cfg!(windows) || lifecycle.keyboard_flags,
+            ghostty,
             lifecycle: Lifecycle {
                 raw_mode: lifecycle.raw_mode,
                 focus: lifecycle.focus,
@@ -248,8 +256,11 @@ impl TerminalSession {
         })
     }
 
-    pub fn release_events_supported(&self) -> bool {
-        self.release_events_supported
+    pub fn input_capabilities(&self) -> InputCapabilities {
+        InputCapabilities {
+            release_events_supported: self.release_events_supported,
+            ghostty: self.ghostty,
+        }
     }
 
     pub fn next_event(&self) -> io::Result<Option<Event>> {

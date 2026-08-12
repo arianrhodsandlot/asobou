@@ -1,5 +1,3 @@
-use crossterm::event::Event;
-use gilrs::{Axis, Button, EventType, GamepadId};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -10,25 +8,6 @@ use std::time::{Duration, Instant};
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 static CTRL_C_HANDLER: OnceLock<Result<(), ctrlc::Error>> = OnceLock::new();
-
-const GAMEPAD_BUTTONS: [Button; 16] = [
-    Button::South,
-    Button::East,
-    Button::North,
-    Button::West,
-    Button::LeftTrigger,
-    Button::RightTrigger,
-    Button::LeftTrigger2,
-    Button::RightTrigger2,
-    Button::Select,
-    Button::Start,
-    Button::LeftThumb,
-    Button::RightThumb,
-    Button::DPadUp,
-    Button::DPadDown,
-    Button::DPadLeft,
-    Button::DPadRight,
-];
 
 fn resolve_core(
     user_input: Option<&str>,
@@ -113,96 +92,6 @@ pub struct Launch {
     pub startup_state: Option<PathBuf>,
     pub resume: bool,
     pub save_on_exit: bool,
-}
-
-#[derive(Default)]
-struct GhosttyCtrlCWorkaround {
-    control_pressed_without_key: bool,
-}
-
-impl GhosttyCtrlCWorkaround {
-    fn handle_key(&mut self, event: crossterm::event::KeyEvent) -> bool {
-        let control = matches!(
-            event.code,
-            crossterm::event::KeyCode::Modifier(
-                crossterm::event::ModifierKeyCode::LeftControl
-                    | crossterm::event::ModifierKeyCode::RightControl
-            )
-        );
-        match (control, event.kind) {
-            (true, crossterm::event::KeyEventKind::Press) => {
-                self.control_pressed_without_key = true;
-                false
-            }
-            (true, crossterm::event::KeyEventKind::Release) => {
-                std::mem::take(&mut self.control_pressed_without_key)
-            }
-            (true, crossterm::event::KeyEventKind::Repeat) => false,
-            (false, _) => {
-                self.control_pressed_without_key = false;
-                false
-            }
-        }
-    }
-
-    fn clear(&mut self) {
-        self.control_pressed_without_key = false;
-    }
-}
-
-fn poll_gamepads(
-    gamepads: &mut gilrs::Gilrs,
-    input: &mut crate::input::InputState,
-    active_gamepad: &mut Option<GamepadId>,
-) {
-    while let Some(event) = gamepads.next_event() {
-        match event.event {
-            EventType::Connected => {
-                if active_gamepad.is_none() {
-                    *active_gamepad = Some(event.id);
-                }
-            }
-            EventType::Disconnected => {
-                if *active_gamepad == Some(event.id) {
-                    *active_gamepad = None;
-                    input.clear_gamepad();
-                }
-            }
-            // Only deliberate mapped button presses claim the active slot;
-            // axis traffic (stick jitter, trigger drift) on a second pad
-            // must not steal control from the pad in use.
-            EventType::ButtonPressed(button, _)
-                if crate::input::default_gamepad_button(button).is_some() =>
-            {
-                *active_gamepad = Some(event.id);
-            }
-            _ => {}
-        }
-    }
-    gamepads.inc();
-
-    let id = active_gamepad.or_else(|| gamepads.gamepads().next().map(|(id, _)| id));
-    let Some(id) = id else {
-        return;
-    };
-    let Some(gamepad) = gamepads.connected_gamepad(id) else {
-        return;
-    };
-
-    let mut buttons = [false; crate::input::JOYPAD_BUTTON_COUNT];
-    for button in GAMEPAD_BUTTONS {
-        if gamepad.is_pressed(button)
-            && let Some(index) = crate::input::default_gamepad_button(button)
-        {
-            buttons[index] = true;
-        }
-    }
-    crate::input::apply_left_stick(
-        &mut buttons,
-        gamepad.value(Axis::LeftStickX),
-        gamepad.value(Axis::LeftStickY),
-    );
-    input.update_gamepad(buttons);
 }
 
 fn rewind_run_frame(
@@ -502,63 +391,28 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
     let schedule_start = Instant::now();
     let mut next_frame = schedule_start;
     let mut next_render = schedule_start;
-    let mut input = crate::input::InputState::with_bindings(
-        input_bindings,
-        terminal.release_events_supported(),
-    );
-    let mut gamepads = match gilrs::Gilrs::new() {
-        Ok(gamepads) => Some(gamepads),
-        Err(error) => {
-            eprintln!("Gamepad input unavailable: {error}");
-            None
-        }
-    };
-    let mut active_gamepad: Option<GamepadId> = None;
-    let mut ghostty_ctrl_c = crate::terminal::is_ghostty().then(GhosttyCtrlCWorkaround::default);
+    let (mut input, gamepad_warning) =
+        crate::input::PhysicalInput::new(input_bindings, terminal.input_capabilities());
+    if let Some(warning) = gamepad_warning {
+        eprintln!("Gamepad input unavailable: {warning}");
+    }
     let mut input_error = None;
     let mut frame_count = 0u64;
 
     while RUNNING.load(Ordering::SeqCst) {
-        loop {
-            match terminal.next_event() {
-                Ok(Some(event)) => match event {
-                    Event::Key(key) => {
-                        let ghostty_ctrl_c_requested = ghostty_ctrl_c
-                            .as_mut()
-                            .is_some_and(|workaround| workaround.handle_key(key));
-                        input.handle_key(key, Instant::now());
-                        if ghostty_ctrl_c_requested || input.quit_requested() {
-                            RUNNING.store(false, Ordering::SeqCst);
-                        }
-                    }
-                    Event::FocusLost => {
-                        input.clear();
-                        if let Some(workaround) = ghostty_ctrl_c.as_mut() {
-                            workaround.clear();
-                        }
-                    }
-                    _ => {}
-                },
-                Ok(None) => break,
-                Err(error) => {
-                    input.clear();
-                    input_error = Some(error);
-                    RUNNING.store(false, Ordering::SeqCst);
-                    break;
-                }
+        let snapshot = match input.poll(&terminal, Instant::now()) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                input_error = Some(error);
+                RUNNING.store(false, Ordering::SeqCst);
+                crate::input::InputSnapshot::default()
             }
-        }
-
-        if let Some(gamepads) = gamepads.as_mut() {
-            poll_gamepads(gamepads, &mut input, &mut active_gamepad);
-        }
-        if input.quit_requested() {
+        };
+        if snapshot.quit_requested {
             RUNNING.store(false, Ordering::SeqCst);
         }
-
-        input.expire(Instant::now());
         if serialization_supported {
-            if input.take_save() {
+            if snapshot.save_requested {
                 match crate::emulation::state::save_state(
                     &states_dir,
                     &game,
@@ -570,7 +424,7 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
                     Err(error) => terminal.show_message(&format!("Save failed: {error}")),
                 }
             }
-            if input.take_load() {
+            if snapshot.load_requested {
                 match crate::emulation::state::load_newest(
                     &states_dir,
                     &game,
@@ -583,12 +437,12 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
                 }
             }
         }
-        game.set_joypad_buttons(input.button_mask());
+        game.set_joypad_buttons(snapshot.joypad_mask);
         if !RUNNING.load(Ordering::SeqCst) {
             break;
         }
 
-        let rewound = if input.rewind_pressed() {
+        let rewound = if snapshot.rewind_held {
             if let Some(rewind) = rewind.as_mut() {
                 game.set_audio_muted(true);
                 let target = rewind.rewind(&game, frame_count, &mut || {
@@ -642,7 +496,7 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
         }
     }
 
-    input.clear();
+    input.clear_effective_state();
     game.set_joypad_buttons(0);
     game.set_video_capture_enabled(true);
     let terminal_result = terminal.finish();
@@ -728,49 +582,6 @@ mod tests {
         let failure = error.downcast::<LaunchFailure>().unwrap();
 
         assert!(matches!(*failure, LaunchFailure::MissingState(path) if path == state));
-    }
-
-    #[test]
-    fn ghostty_ctrl_c_workaround_exits_after_an_unreported_key() {
-        let mut workaround = GhosttyCtrlCWorkaround::default();
-        let press = crossterm::event::KeyEvent::new_with_kind(
-            crossterm::event::KeyCode::Modifier(crossterm::event::ModifierKeyCode::LeftControl),
-            crossterm::event::KeyModifiers::CONTROL,
-            crossterm::event::KeyEventKind::Press,
-        );
-        let release = crossterm::event::KeyEvent::new_with_kind(
-            crossterm::event::KeyCode::Modifier(crossterm::event::ModifierKeyCode::LeftControl),
-            crossterm::event::KeyModifiers::CONTROL,
-            crossterm::event::KeyEventKind::Release,
-        );
-
-        workaround.handle_key(press);
-
-        assert!(workaround.handle_key(release));
-    }
-
-    #[test]
-    fn ghostty_ctrl_c_workaround_ignores_control_chords_with_reported_keys() {
-        let mut workaround = GhosttyCtrlCWorkaround::default();
-        let control_press = crossterm::event::KeyEvent::new_with_kind(
-            crossterm::event::KeyCode::Modifier(crossterm::event::ModifierKeyCode::LeftControl),
-            crossterm::event::KeyModifiers::CONTROL,
-            crossterm::event::KeyEventKind::Press,
-        );
-        let key_press = crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL,
-        );
-        let control_release = crossterm::event::KeyEvent::new_with_kind(
-            crossterm::event::KeyCode::Modifier(crossterm::event::ModifierKeyCode::LeftControl),
-            crossterm::event::KeyModifiers::CONTROL,
-            crossterm::event::KeyEventKind::Release,
-        );
-
-        workaround.handle_key(control_press);
-        workaround.handle_key(key_press);
-
-        assert!(!workaround.handle_key(control_release));
     }
 
     #[test]

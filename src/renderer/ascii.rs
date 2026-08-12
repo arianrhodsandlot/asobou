@@ -1,47 +1,12 @@
-use super::{Frame, Renderer};
-use std::io::{self, IsTerminal, Write};
+use super::{Frame, Renderer, Viewport};
+use std::io::{self, Write};
 
 const RAMP: &[u8] = b" .:-=+*#%@";
 const RAMP_LEN: f32 = (RAMP.len() - 1) as f32;
 
-pub struct AsciiRenderer {
-    use_alternate_screen: bool,
-    screen_active: bool,
-}
+pub struct AsciiRenderer;
 
 impl AsciiRenderer {
-    pub fn new(no_alt_screen: bool) -> Self {
-        Self {
-            use_alternate_screen: !no_alt_screen,
-            screen_active: false,
-        }
-    }
-
-    fn enter_screen(&mut self) {
-        if !self.use_alternate_screen || self.screen_active || !io::stdout().is_terminal() {
-            return;
-        }
-        let mut stdout = io::stdout().lock();
-        if stdout
-            .write_all(b"\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H")
-            .and_then(|_| stdout.flush())
-            .is_ok()
-        {
-            self.screen_active = true;
-        }
-    }
-
-    fn leave_screen(&mut self) {
-        if !self.screen_active {
-            return;
-        }
-        let mut stdout = io::stdout().lock();
-        let _ = stdout
-            .write_all(b"\x1b[?25h\x1b[?1049l")
-            .and_then(|_| stdout.flush());
-        self.screen_active = false;
-    }
-
     fn render_at(
         &mut self,
         frame: &Frame,
@@ -51,6 +16,9 @@ impl AsciiRenderer {
     ) -> io::Result<()> {
         let tw = term_cols as u32;
         let th = term_rows as u32;
+        if frame.width == 0 || frame.height == 0 || tw == 0 || th == 0 {
+            return Ok(());
+        }
 
         let fw = frame.width as f32;
         let fh = frame.height as f32;
@@ -106,29 +74,18 @@ impl AsciiRenderer {
             }
         }
 
-        out.write_all(&buf)?;
-        out.flush()
+        out.write_all(&buf)
     }
 }
 
 impl Renderer for AsciiRenderer {
-    fn setup(&mut self, _src_width: u32, _src_height: u32) {
-        self.enter_screen();
-    }
-
-    fn render(&mut self, frame: &Frame, out: &mut dyn io::Write) -> io::Result<()> {
-        let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        self.render_at(frame, out, term_cols, term_rows)
-    }
-
-    fn cleanup(&mut self) {
-        self.leave_screen();
-    }
-}
-
-impl Drop for AsciiRenderer {
-    fn drop(&mut self) {
-        self.leave_screen();
+    fn render(
+        &mut self,
+        frame: &Frame,
+        viewport: Viewport,
+        out: &mut dyn io::Write,
+    ) -> io::Result<()> {
+        self.render_at(frame, out, viewport.columns, viewport.rows)
     }
 }
 
@@ -179,7 +136,7 @@ mod tests {
     }
 
     fn render_ascii(frame: &Frame, tw: u16, th: u16) -> Vec<u8> {
-        let mut renderer = AsciiRenderer::new(true);
+        let mut renderer = AsciiRenderer;
         let mut buf = Vec::new();
         renderer.render_at(frame, &mut buf, tw, th).unwrap();
         buf

@@ -1,22 +1,18 @@
-use super::{Frame, Renderer};
+use super::{Frame, Renderer, Viewport};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use image::{DynamicImage, RgbImage};
 use std::borrow::Cow;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, Write};
 
-const ENTER_SCREEN: &[u8] = b"\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H";
-const LEAVE_SCREEN: &[u8] = b"\x1b[?25h\x1b[?1049l";
-const KITTY_IMAGE_ID: u32 = 0xa50b_0001;
+pub(crate) const KITTY_IMAGE_ID: u32 = 0xa50b_0001;
 const KITTY_PLACEMENT_ID: u32 = 1;
 const KITTY_CHUNK_SIZE: usize = 4096;
 
 pub struct GraphicRenderer {
     width: Option<u32>,
     height: Option<u32>,
-    screen_active: bool,
-    reserved_rows: usize,
     compression_enabled: bool,
 }
 
@@ -39,16 +35,10 @@ fn fit_cell_size(
 }
 
 impl GraphicRenderer {
-    pub fn new(reserved_rows: usize) -> Self {
-        Self::with_compression(reserved_rows, !crate::terminal::is_ghostty())
-    }
-
-    fn with_compression(reserved_rows: usize, compression_enabled: bool) -> Self {
+    pub fn new(compression_enabled: bool) -> Self {
         Self {
             width: None,
             height: None,
-            screen_active: false,
-            reserved_rows,
             compression_enabled,
         }
     }
@@ -59,37 +49,17 @@ impl GraphicRenderer {
             .unwrap_or_else(|| DynamicImage::ImageRgb8(RgbImage::new(frame.width, frame.height)))
     }
 
-    fn enter_screen(&mut self) {
-        if self.screen_active || !io::stdout().is_terminal() {
-            return;
-        }
-
-        let mut stdout = io::stdout().lock();
-        if stdout
-            .write_all(ENTER_SCREEN)
-            .and_then(|_| stdout.flush())
-            .is_ok()
-        {
-            self.screen_active = true;
-        }
-    }
-
-    fn render_kitty(&self, img: &DynamicImage, out: &mut dyn io::Write) -> io::Result<()> {
-        let (columns, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        self.render_kitty_at(img, out, columns, rows)
-    }
-
     fn render_kitty_at(
         &self,
         img: &DynamicImage,
         out: &mut dyn io::Write,
         terminal_columns: u16,
-        terminal_rows: u16,
+        available_rows: u16,
     ) -> io::Result<()> {
-        let available_rows = usize::from(terminal_rows).saturating_sub(self.reserved_rows);
         if terminal_columns == 0 || available_rows == 0 {
             return Ok(());
         }
+        let available_rows = usize::from(available_rows);
         let height = self.height.map_or(available_rows, |height| {
             usize::try_from(height)
                 .unwrap_or(usize::MAX)
@@ -141,36 +111,21 @@ impl GraphicRenderer {
 
         out.write_all(&command)
     }
-
-    fn leave_screen(&mut self) {
-        if !self.screen_active {
-            return;
-        }
-
-        let mut stdout = io::stdout().lock();
-        let _ = write!(stdout, "\x1b_Ga=d,d=I,i={},q=2;\x1b\\", KITTY_IMAGE_ID);
-        let _ = stdout.write_all(LEAVE_SCREEN).and_then(|_| stdout.flush());
-        self.screen_active = false;
-    }
 }
 
 impl Renderer for GraphicRenderer {
-    fn setup(&mut self, _src_width: u32, _src_height: u32) {
-        self.enter_screen();
-    }
-
-    fn render(&mut self, frame: &Frame, out: &mut dyn io::Write) -> io::Result<()> {
-        self.render_kitty(&Self::frame_to_image(frame), out)
-    }
-
-    fn cleanup(&mut self) {
-        self.leave_screen();
-    }
-}
-
-impl Drop for GraphicRenderer {
-    fn drop(&mut self) {
-        self.leave_screen();
+    fn render(
+        &mut self,
+        frame: &Frame,
+        viewport: Viewport,
+        out: &mut dyn io::Write,
+    ) -> io::Result<()> {
+        self.render_kitty_at(
+            &Self::frame_to_image(frame),
+            out,
+            viewport.columns,
+            viewport.rows,
+        )
     }
 }
 
@@ -184,13 +139,13 @@ mod tests {
 
     #[test]
     fn kitty_stream_reuses_image_and_placement_ids() {
-        let mut renderer = GraphicRenderer::with_compression(0, true);
+        let mut renderer = GraphicRenderer::new(true);
         renderer.width = Some(1);
         renderer.height = Some(1);
         let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(2, 2, Rgb([1, 2, 3])));
         let mut output = Vec::new();
 
-        renderer.render_kitty(&img, &mut output).unwrap();
+        renderer.render_kitty_at(&img, &mut output, 80, 24).unwrap();
 
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains(&format!("a=t,f=24,t=d,o=z,s=2,v=2,i={KITTY_IMAGE_ID}")));
@@ -204,14 +159,14 @@ mod tests {
 
     #[test]
     fn kitty_stream_compresses_rgb_payload_with_zlib() {
-        let renderer = GraphicRenderer::with_compression(0, true);
+        let renderer = GraphicRenderer::new(true);
         let img = DynamicImage::ImageRgb8(RgbImage::from_fn(4, 4, |x, y| {
             Rgb([x as u8, y as u8, (x + y) as u8])
         }));
         let expected = img.to_rgb8().into_raw();
         let mut output = Vec::new();
 
-        renderer.render_kitty(&img, &mut output).unwrap();
+        renderer.render_kitty_at(&img, &mut output, 80, 24).unwrap();
 
         let output = String::from_utf8(output).unwrap();
         let payload = output
@@ -235,14 +190,14 @@ mod tests {
 
     #[test]
     fn kitty_stream_sends_uncompressed_rgb_when_compression_is_disabled() {
-        let renderer = GraphicRenderer::with_compression(0, false);
+        let renderer = GraphicRenderer::new(false);
         let img = DynamicImage::ImageRgb8(RgbImage::from_fn(4, 4, |x, y| {
             Rgb([x as u8, y as u8, (x + y) as u8])
         }));
         let expected = img.to_rgb8().into_raw();
         let mut output = Vec::new();
 
-        renderer.render_kitty(&img, &mut output).unwrap();
+        renderer.render_kitty_at(&img, &mut output, 80, 24).unwrap();
 
         let output = String::from_utf8(output).unwrap();
         let command = output.split_once("\x1b_G").unwrap().1;
@@ -255,13 +210,13 @@ mod tests {
 
     #[test]
     fn kitty_stream_silences_every_image_chunk() {
-        let renderer = GraphicRenderer::with_compression(0, true);
+        let renderer = GraphicRenderer::new(true);
         let img = DynamicImage::ImageRgb8(RgbImage::from_fn(64, 64, |x, y| {
             Rgb([x as u8, y as u8, (x ^ y) as u8])
         }));
         let mut output = Vec::new();
 
-        renderer.render_kitty(&img, &mut output).unwrap();
+        renderer.render_kitty_at(&img, &mut output, 80, 24).unwrap();
 
         let output = String::from_utf8(output).unwrap();
         let continuation_chunks = output
@@ -285,11 +240,11 @@ mod tests {
 
     #[test]
     fn kitty_stream_reserves_status_rows_below_the_image() {
-        let renderer = GraphicRenderer::new(2);
+        let renderer = GraphicRenderer::new(true);
         let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(200, 200, Rgb([1, 2, 3])));
         let mut output = Vec::new();
 
-        renderer.render_kitty_at(&img, &mut output, 80, 24).unwrap();
+        renderer.render_kitty_at(&img, &mut output, 80, 22).unwrap();
 
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("\x1b[1;19H"));

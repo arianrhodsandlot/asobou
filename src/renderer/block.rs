@@ -1,49 +1,12 @@
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, Write};
 
 use image::{RgbImage, imageops::FilterType};
 
-use super::{Frame, Renderer};
+use super::{Frame, Renderer, Viewport};
 
-pub struct BlockRenderer {
-    use_alternate_screen: bool,
-    screen_active: bool,
-}
+pub struct BlockRenderer;
 
 impl BlockRenderer {
-    pub fn new(no_alt_screen: bool) -> Self {
-        Self {
-            use_alternate_screen: !no_alt_screen,
-            screen_active: false,
-        }
-    }
-
-    fn enter_screen(&mut self) {
-        if !self.use_alternate_screen || self.screen_active || !io::stdout().is_terminal() {
-            return;
-        }
-
-        let mut stdout = io::stdout().lock();
-        if stdout
-            .write_all(b"\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H")
-            .and_then(|_| stdout.flush())
-            .is_ok()
-        {
-            self.screen_active = true;
-        }
-    }
-
-    fn leave_screen(&mut self) {
-        if !self.screen_active {
-            return;
-        }
-
-        let mut stdout = io::stdout().lock();
-        let _ = stdout
-            .write_all(b"\x1b[?25h\x1b[?1049l")
-            .and_then(|_| stdout.flush());
-        self.screen_active = false;
-    }
-
     fn render_frame(
         frame: &Frame,
         term_cols: u32,
@@ -107,42 +70,29 @@ impl BlockRenderer {
             buffer.extend(std::iter::repeat_n(b' ', pad_right));
         }
 
-        out.write_all(&buffer)?;
-        out.flush()
+        out.write_all(&buffer)
     }
 }
 
 impl Renderer for BlockRenderer {
-    fn setup(&mut self, _src_width: u32, _src_height: u32) {
-        self.enter_screen();
-    }
-
-    fn render(&mut self, frame: &Frame, out: &mut dyn io::Write) -> io::Result<()> {
-        let (columns, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        Self::render_frame(frame, u32::from(columns), u32::from(rows), out)
-    }
-
-    fn cleanup(&mut self) {
-        self.leave_screen();
-    }
-}
-
-impl Drop for BlockRenderer {
-    fn drop(&mut self) {
-        self.leave_screen();
+    fn render(
+        &mut self,
+        frame: &Frame,
+        viewport: Viewport,
+        out: &mut dyn io::Write,
+    ) -> io::Result<()> {
+        Self::render_frame(
+            frame,
+            u32::from(viewport.columns),
+            u32::from(viewport.rows),
+            out,
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{BlockRenderer, Frame};
-
-    #[test]
-    fn no_alt_screen_disables_alternate_screen() {
-        let renderer = BlockRenderer::new(true);
-
-        assert!(!renderer.use_alternate_screen);
-    }
 
     #[test]
     fn frame_repaint_starts_at_terminal_home() {

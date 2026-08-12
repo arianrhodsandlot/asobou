@@ -1,23 +1,15 @@
-use crossterm::event::{
-    self, DisableFocusChange, EnableFocusChange, Event, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-};
+use crossterm::event::Event;
 use gilrs::{Axis, Button, EventType, GamepadId};
 use std::fmt;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 static CTRL_C_HANDLER: OnceLock<Result<(), ctrlc::Error>> = OnceLock::new();
-const TERMINAL_INPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
-const TERMINAL_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(5);
-const STATUS_MESSAGE_DURATION: Duration = Duration::from_secs(2);
-const RESET_STYLE: &str = "\x1b[0m";
-const DIM_STYLE: &str = "\x1b[2m";
 
 const GAMEPAD_BUTTONS: [Button; 16] = [
     Button::South,
@@ -37,67 +29,6 @@ const GAMEPAD_BUTTONS: [Button; 16] = [
     Button::DPadLeft,
     Button::DPadRight,
 ];
-
-struct LatestFrameMailbox {
-    state: Mutex<LatestFrameState>,
-    ready: Condvar,
-}
-
-#[derive(Default)]
-struct LatestFrameState {
-    frame: Option<Arc<crate::renderer::Frame>>,
-    closed: bool,
-    waiting: bool,
-}
-
-impl LatestFrameMailbox {
-    fn new() -> Self {
-        Self {
-            state: Mutex::new(LatestFrameState {
-                waiting: true,
-                ..LatestFrameState::default()
-            }),
-            ready: Condvar::new(),
-        }
-    }
-
-    fn publish(&self, frame: Arc<crate::renderer::Frame>) -> bool {
-        let mut state = self.state.lock().unwrap();
-        if state.closed {
-            return false;
-        }
-        state.frame = Some(frame);
-        state.waiting = false;
-        self.ready.notify_one();
-        true
-    }
-
-    fn receive(&self) -> Option<Arc<crate::renderer::Frame>> {
-        let mut state = self.state.lock().unwrap();
-        while state.frame.is_none() && !state.closed {
-            state.waiting = true;
-            state = self.ready.wait(state).unwrap();
-        }
-        if state.closed {
-            None
-        } else {
-            state.frame.take()
-        }
-    }
-
-    fn close(&self) {
-        let mut state = self.state.lock().unwrap();
-        state.closed = true;
-        state.frame = None;
-        state.waiting = false;
-        self.ready.notify_all();
-    }
-
-    fn wants_frame(&self) -> bool {
-        let state = self.state.lock().unwrap();
-        state.waiting && !state.closed
-    }
-}
 
 fn resolve_core(
     user_input: Option<&str>,
@@ -184,12 +115,6 @@ pub struct Launch {
     pub save_on_exit: bool,
 }
 
-struct TerminalGuard {
-    focus_enabled: bool,
-    keyboard_flags_pushed: bool,
-    release_events_supported: bool,
-}
-
 #[derive(Default)]
 struct GhosttyCtrlCWorkaround {
     control_pressed_without_key: bool,
@@ -222,59 +147,6 @@ impl GhosttyCtrlCWorkaround {
 
     fn clear(&mut self) {
         self.control_pressed_without_key = false;
-    }
-}
-
-impl TerminalGuard {
-    fn enter() -> io::Result<Self> {
-        crossterm::terminal::enable_raw_mode()?;
-        let mut stdout = io::stdout();
-        let focus_enabled = crossterm::execute!(stdout, EnableFocusChange).is_ok();
-        let ghostty = crate::terminal::is_ghostty();
-        let keyboard_enhancement_supported =
-            ghostty || crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
-        let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-            | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-            | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
-        let keyboard_flags_pushed = keyboard_enhancement_supported
-            && crossterm::execute!(stdout, PushKeyboardEnhancementFlags(flags)).is_ok();
-        Ok(Self {
-            focus_enabled,
-            keyboard_flags_pushed,
-            release_events_supported: cfg!(windows) || keyboard_flags_pushed,
-        })
-    }
-}
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        let mut stdout = io::stdout();
-        if self.keyboard_flags_pushed {
-            let _ = crossterm::execute!(stdout, PopKeyboardEnhancementFlags);
-        }
-        if self.focus_enabled {
-            let _ = crossterm::execute!(stdout, DisableFocusChange);
-        }
-        let _ = stdout.flush();
-        if self.keyboard_flags_pushed {
-            drain_pending_terminal_events();
-        }
-        let _ = crossterm::terminal::disable_raw_mode();
-    }
-}
-
-fn drain_pending_terminal_events() {
-    let deadline = Instant::now() + TERMINAL_INPUT_DRAIN_TIMEOUT;
-    while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
-        match event::poll(remaining.min(TERMINAL_INPUT_POLL_INTERVAL)) {
-            Ok(true) => {
-                if event::read().is_err() {
-                    break;
-                }
-            }
-            Ok(false) => {}
-            Err(_) => break,
-        }
     }
 }
 
@@ -335,13 +207,13 @@ fn poll_gamepads(
 
 fn rewind_run_frame(
     game: &crate::emulation::libretro::LoadedGame,
-    frame_mailbox: &LatestFrameMailbox,
+    terminal: &crate::terminal::TerminalSession,
 ) {
     game.set_video_capture_enabled(true);
     game.run_frame();
     let frame = game.latest_frame();
     if let Some(frame) = frame {
-        frame_mailbox.publish(frame);
+        terminal.present(frame);
     }
 }
 
@@ -350,111 +222,11 @@ struct AudioSession<'a> {
     backend: Box<dyn crate::audio::AudioBackend>,
 }
 
-type RenderThread =
-    thread::JoinHandle<io::Result<(io::Result<()>, Box<dyn crate::renderer::Renderer>)>>;
-
-struct RenderSession {
-    mailbox: Arc<LatestFrameMailbox>,
-    status_messages: Arc<Mutex<Option<(String, Instant)>>>,
-    thread: Option<RenderThread>,
-}
-
-impl RenderSession {
-    fn start(renderer: Box<dyn crate::renderer::Renderer>, status_lines: Vec<String>) -> Self {
-        let mailbox = Arc::new(LatestFrameMailbox::new());
-        let render_mailbox = Arc::clone(&mailbox);
-        let status_messages = Arc::new(Mutex::new(None::<(String, Instant)>));
-        let status_messages_render = Arc::clone(&status_messages);
-        let thread = thread::spawn(
-            move || -> io::Result<(io::Result<()>, Box<dyn crate::renderer::Renderer>)> {
-                let mut renderer = renderer;
-                let mut stdout = io::stdout().lock();
-                let result = (|| {
-                    while let Some(frame) = render_mailbox.receive() {
-                        renderer.render(&frame, &mut stdout)?;
-                        let (columns, rows) = crossterm::terminal::size()?;
-                        let message = {
-                            let mut guard = status_messages_render.lock().unwrap();
-                            match &*guard {
-                                Some((text, at)) if at.elapsed() < STATUS_MESSAGE_DURATION => {
-                                    Some(text.clone())
-                                }
-                                _ => {
-                                    *guard = None;
-                                    None
-                                }
-                            }
-                        };
-                        write_status_lines(
-                            &mut stdout,
-                            &status_lines,
-                            message.as_deref(),
-                            columns,
-                            rows,
-                        )?;
-                        stdout.flush()?;
-                    }
-                    Ok(())
-                })();
-                render_mailbox.close();
-                drop(stdout);
-                Ok((result, renderer))
-            },
-        );
-        Self {
-            mailbox,
-            status_messages,
-            thread: Some(thread),
-        }
-    }
-
-    fn set_message(&self, text: &str) {
-        if let Ok(mut guard) = self.status_messages.lock() {
-            *guard = Some((text.to_string(), Instant::now()));
-        }
-    }
-
-    fn stop(
-        mut self,
-    ) -> Result<(io::Result<()>, Box<dyn crate::renderer::Renderer>), Box<dyn std::error::Error>>
-    {
-        self.mailbox.close();
-        let Some(thread) = self.thread.take() else {
-            return Err(io::Error::other("renderer thread already stopped").into());
-        };
-        match thread.join() {
-            Ok(result) => Ok(result?),
-            Err(_) => Err(io::Error::other("renderer thread panicked").into()),
-        }
-    }
-}
-
-impl Drop for RenderSession {
-    fn drop(&mut self) {
-        self.mailbox.close();
-        if let Some(thread) = self.thread.take()
-            && let Ok(Ok((_, mut renderer))) = thread.join()
-        {
-            renderer.cleanup();
-        }
-    }
-}
-
 impl Drop for AudioSession<'_> {
     fn drop(&mut self) {
         self.game.clear_audio_sink();
         self.backend.stop();
     }
-}
-
-fn format_status_line(status: &str, width: usize) -> String {
-    let clipped: String = status.chars().take(width).collect();
-    let padding = width.saturating_sub(clipped.chars().count()) / 2;
-    let mut output = format!("{:padding$}", "");
-    output.push_str(DIM_STYLE);
-    output.push_str(&clipped);
-    output.push_str(RESET_STYLE);
-    output
 }
 
 fn status_lines(
@@ -472,36 +244,6 @@ fn status_lines(
         lines.push(input_bindings.controls_status_line());
     }
     lines
-}
-
-fn write_status_lines(
-    out: &mut dyn Write,
-    status_lines: &[String],
-    message: Option<&str>,
-    columns: u16,
-    rows: u16,
-) -> io::Result<()> {
-    if columns == 0 || rows == 0 || status_lines.is_empty() && message.is_none() {
-        return Ok(());
-    }
-    let available = usize::from(rows);
-    let first = status_lines.len().saturating_sub(available);
-    let visible_lines = &status_lines[first..];
-    let line_count = visible_lines.len().max(usize::from(message.is_some()));
-    let first_row = usize::from(rows) - line_count + 1;
-    for (index, status) in visible_lines.iter().enumerate() {
-        let line = format_status_line(status, usize::from(columns));
-        write!(
-            out,
-            "\x1b[{};1H{RESET_STYLE}\x1b[K{line}",
-            first_row + index
-        )?;
-    }
-    if let Some(message) = message {
-        let message: String = message.chars().take(usize::from(columns)).collect();
-        write!(out, "\x1b[{rows};1H{RESET_STYLE}{message}{RESET_STYLE}")?;
-    }
-    Ok(())
 }
 
 pub enum Outcome {
@@ -559,7 +301,8 @@ fn install_ctrl_c_handler() -> io::Result<()> {
 
 struct PreparedGame {
     game: crate::emulation::libretro::LoadedGame,
-    renderer: Box<dyn crate::renderer::Renderer>,
+    renderer_mode: crate::renderer::RendererMode,
+    primary_screen: bool,
     audio_backend: Box<dyn crate::audio::AudioBackend>,
     av_info: crate::emulation::libretro::RetroSystemAvInfo,
     status_lines: Vec<String>,
@@ -575,7 +318,7 @@ struct PreparedGame {
 }
 
 enum Preparation {
-    Ready(PreparedGame),
+    Ready(Box<PreparedGame>),
     Rejected(PathBuf),
 }
 
@@ -626,7 +369,6 @@ fn prepare(config: Launch) -> Result<Preparation, Box<dyn std::error::Error>> {
     };
 
     let status_lines = status_lines(&input_bindings, status_settings);
-    let renderer = crate::renderer::create(renderer_mode, primary_screen, status_lines.len())?;
     let core = crate::emulation::libretro::load_core(&core_path)?;
     let mut audio_backend = if muted {
         crate::audio::muted()
@@ -676,9 +418,10 @@ fn prepare(config: Launch) -> Result<Preparation, Box<dyn std::error::Error>> {
     }
 
     let av_info = game.av_info();
-    Ok(Preparation::Ready(PreparedGame {
+    Ok(Preparation::Ready(Box::new(PreparedGame {
         game,
-        renderer,
+        renderer_mode,
+        primary_screen,
         audio_backend,
         av_info,
         status_lines,
@@ -691,17 +434,18 @@ fn prepare(config: Launch) -> Result<Preparation, Box<dyn std::error::Error>> {
         core_name,
         game_name,
         save_on_exit,
-    }))
+    })))
 }
 
 pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
     let prepared = match prepare(config)? {
-        Preparation::Ready(prepared) => prepared,
+        Preparation::Ready(prepared) => *prepared,
         Preparation::Rejected(rom) => return Ok(Outcome::LaunchRejected(rom)),
     };
     let PreparedGame {
         game,
-        mut renderer,
+        renderer_mode,
+        primary_screen,
         mut audio_backend,
         av_info,
         status_lines,
@@ -715,9 +459,6 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
         game_name,
         save_on_exit,
     } = prepared;
-    let w = av_info.geometry.base_width;
-    let h = av_info.geometry.base_height;
-
     let audio_sink = match audio_backend.start(av_info.timing.sample_rate) {
         Ok(sink) => sink,
         Err(e) => {
@@ -732,8 +473,6 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
         backend: audio_backend,
     };
 
-    renderer.setup(w, h);
-
     let mut rewind = if rewind_settings.enabled && serialization_supported {
         crate::emulation::rewind::Rewind::new(
             state_size,
@@ -747,8 +486,11 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
         rewind.capture(&game, 0);
     }
 
-    let terminal = TerminalGuard::enter()?;
-    let render_session = RenderSession::start(renderer, status_lines);
+    let terminal = crate::terminal::TerminalSession::start(crate::terminal::Settings {
+        renderer: renderer_mode,
+        primary_screen,
+        status_lines,
+    })?;
 
     let fps = if av_info.timing.fps.is_finite() && av_info.timing.fps > 0.0 {
         av_info.timing.fps
@@ -760,8 +502,10 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
     let schedule_start = Instant::now();
     let mut next_frame = schedule_start;
     let mut next_render = schedule_start;
-    let mut input =
-        crate::input::InputState::with_bindings(input_bindings, terminal.release_events_supported);
+    let mut input = crate::input::InputState::with_bindings(
+        input_bindings,
+        terminal.release_events_supported(),
+    );
     let mut gamepads = match gilrs::Gilrs::new() {
         Ok(gamepads) => Some(gamepads),
         Err(error) => {
@@ -776,9 +520,9 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
 
     while RUNNING.load(Ordering::SeqCst) {
         loop {
-            match event::poll(Duration::ZERO) {
-                Ok(true) => match event::read() {
-                    Ok(Event::Key(key)) => {
+            match terminal.next_event() {
+                Ok(Some(event)) => match event {
+                    Event::Key(key) => {
                         let ghostty_ctrl_c_requested = ghostty_ctrl_c
                             .as_mut()
                             .is_some_and(|workaround| workaround.handle_key(key));
@@ -787,21 +531,15 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
                             RUNNING.store(false, Ordering::SeqCst);
                         }
                     }
-                    Ok(Event::FocusLost) => {
+                    Event::FocusLost => {
                         input.clear();
                         if let Some(workaround) = ghostty_ctrl_c.as_mut() {
                             workaround.clear();
                         }
                     }
-                    Ok(_) => {}
-                    Err(error) => {
-                        input.clear();
-                        input_error = Some(error);
-                        RUNNING.store(false, Ordering::SeqCst);
-                        break;
-                    }
+                    _ => {}
                 },
-                Ok(false) => break,
+                Ok(None) => break,
                 Err(error) => {
                     input.clear();
                     input_error = Some(error);
@@ -828,8 +566,8 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
                     &core_name,
                     &game_name,
                 ) {
-                    Ok(_) => render_session.set_message("State saved"),
-                    Err(error) => render_session.set_message(&format!("Save failed: {error}")),
+                    Ok(_) => terminal.show_message("State saved"),
+                    Err(error) => terminal.show_message(&format!("Save failed: {error}")),
                 }
             }
             if input.take_load() {
@@ -839,9 +577,9 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
                     &core_name,
                     &game_name,
                 ) {
-                    Ok(Some(_)) => render_session.set_message("State loaded"),
-                    Ok(None) => render_session.set_message("No save state found"),
-                    Err(error) => render_session.set_message(&format!("Load failed: {error}")),
+                    Ok(Some(_)) => terminal.show_message("State loaded"),
+                    Ok(None) => terminal.show_message("No save state found"),
+                    Err(error) => terminal.show_message(&format!("Load failed: {error}")),
                 }
             }
         }
@@ -854,7 +592,7 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
             if let Some(rewind) = rewind.as_mut() {
                 game.set_audio_muted(true);
                 let target = rewind.rewind(&game, frame_count, &mut || {
-                    rewind_run_frame(&game, &render_session.mailbox)
+                    rewind_run_frame(&game, &terminal)
                 });
                 game.set_audio_muted(false);
                 match target {
@@ -872,8 +610,7 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
         };
 
         if !rewound {
-            let capture_frame =
-                Instant::now() >= next_render && render_session.mailbox.wants_frame();
+            let capture_frame = Instant::now() >= next_render && terminal.wants_frame();
             game.set_video_capture_enabled(capture_frame);
             game.run_frame();
             frame_count += 1;
@@ -884,7 +621,7 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
             if capture_frame {
                 let frame = game.latest_frame();
                 if let Some(frame) = frame
-                    && !render_session.mailbox.publish(frame)
+                    && !terminal.present(frame)
                 {
                     break;
                 }
@@ -908,10 +645,7 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
     input.clear();
     game.set_joypad_buttons(0);
     game.set_video_capture_enabled(true);
-    let (render_result, mut renderer) = render_session.stop()?;
-    drop(terminal);
-    renderer.cleanup();
-    render_result?;
+    let terminal_result = terminal.finish();
 
     if serialization_supported && save_on_exit {
         match crate::emulation::state::save_state(
@@ -931,6 +665,7 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
     if let Some(error) = input_error {
         return Err(error.into());
     }
+    terminal_result?;
     Ok(Outcome::Completed)
 }
 
@@ -963,18 +698,6 @@ mod tests {
             resume: false,
             save_on_exit: false,
         }
-    }
-
-    fn frame(value: u8) -> Arc<crate::renderer::Frame> {
-        Arc::new(crate::renderer::Frame {
-            data: vec![value; 3],
-            width: 1,
-            height: 1,
-        })
-    }
-
-    fn mailbox() -> LatestFrameMailbox {
-        LatestFrameMailbox::new()
     }
 
     #[test]
@@ -1051,61 +774,6 @@ mod tests {
     }
 
     #[test]
-    fn mailbox_replaces_a_waiting_frame_with_the_latest() {
-        let mailbox = mailbox();
-        mailbox.publish(frame(1));
-        mailbox.publish(frame(2));
-
-        assert_eq!(mailbox.receive().unwrap().data, vec![2; 3]);
-    }
-
-    #[test]
-    fn closed_mailbox_discards_frames_and_rejects_new_ones() {
-        let mailbox = mailbox();
-        mailbox.publish(frame(1));
-        mailbox.close();
-
-        assert!(mailbox.receive().is_none());
-        assert!(!mailbox.publish(frame(2)));
-    }
-
-    #[test]
-    fn mailbox_requests_another_frame_after_the_current_one_is_received() {
-        let mailbox = Arc::new(mailbox());
-        assert!(mailbox.wants_frame());
-        mailbox.publish(frame(1));
-        assert!(!mailbox.wants_frame());
-        mailbox.receive();
-
-        let receiver_mailbox = Arc::clone(&mailbox);
-        let receiver = thread::spawn(move || receiver_mailbox.receive());
-        let deadline = Instant::now() + Duration::from_secs(1);
-        let mut wanted = mailbox.wants_frame();
-        while !wanted && Instant::now() < deadline {
-            thread::yield_now();
-            wanted = mailbox.wants_frame();
-        }
-        mailbox.close();
-
-        assert!(wanted);
-        assert!(receiver.join().unwrap().is_none());
-    }
-
-    #[test]
-    fn status_line_centers_and_dims_controls() {
-        let line = format_status_line("Exit", 10);
-
-        assert_eq!(line, "   \x1b[2mExit\x1b[0m");
-    }
-
-    #[test]
-    fn status_line_truncates_before_centering() {
-        let line = format_status_line("Exit-escape", 4);
-
-        assert_eq!(line, "\x1b[2mExit\x1b[0m");
-    }
-
-    #[test]
     fn universal_status_switch_hides_both_groups() {
         let lines = status_lines(
             &crate::input::InputBindings::default(),
@@ -1131,66 +799,5 @@ mod tests {
         );
 
         assert_eq!(lines, ["Save-f2 Load-f4 Rewind-r Exit-escape"]);
-    }
-
-    #[test]
-    fn status_rows_render_gamepad_above_controls() {
-        let lines = vec!["Game".to_string(), "Controls".to_string()];
-        let mut output = Vec::new();
-
-        write_status_lines(&mut output, &lines, None, 20, 2).unwrap();
-
-        assert_eq!(
-            String::from_utf8(output).unwrap(),
-            "\x1b[1;1H\x1b[0m\x1b[K        \x1b[2mGame\x1b[0m\x1b[2;1H\x1b[0m\x1b[K      \x1b[2mControls\x1b[0m"
-        );
-    }
-
-    #[test]
-    fn one_row_terminal_prioritizes_controls() {
-        let lines = vec!["Game".to_string(), "Controls".to_string()];
-        let mut output = Vec::new();
-
-        write_status_lines(&mut output, &lines, None, 20, 1).unwrap();
-
-        assert_eq!(
-            String::from_utf8(output).unwrap(),
-            "\x1b[1;1H\x1b[0m\x1b[K      \x1b[2mControls\x1b[0m"
-        );
-    }
-
-    #[test]
-    fn hidden_status_still_renders_a_message() {
-        let mut output = Vec::new();
-
-        write_status_lines(&mut output, &[], Some("Saved"), 10, 2).unwrap();
-
-        assert_eq!(
-            String::from_utf8(output).unwrap(),
-            "\x1b[2;1H\x1b[0mSaved\x1b[0m"
-        );
-    }
-
-    #[test]
-    fn message_does_not_change_the_centered_controls_position() {
-        let lines = vec!["Controls".to_string()];
-        let mut output = Vec::new();
-
-        write_status_lines(&mut output, &lines, Some("Saved"), 20, 2).unwrap();
-
-        assert_eq!(
-            String::from_utf8(output).unwrap(),
-            "\x1b[2;1H\x1b[0m\x1b[K      \x1b[2mControls\x1b[0m\x1b[2;1H\x1b[0mSaved\x1b[0m"
-        );
-    }
-
-    #[test]
-    fn zero_sized_terminal_does_not_render_status() {
-        let lines = vec!["Controls".to_string()];
-        let mut output = Vec::new();
-
-        write_status_lines(&mut output, &lines, Some("Saved"), 20, 0).unwrap();
-
-        assert!(output.is_empty());
     }
 }

@@ -1,5 +1,4 @@
 pub mod ascii;
-pub mod auto;
 pub mod block;
 pub mod graphic;
 
@@ -32,25 +31,17 @@ pub struct Frame {
     pub height: u32,
 }
 
-pub trait Renderer: Send {
-    fn setup(&mut self, src_width: u32, src_height: u32);
-    fn render(&mut self, frame: &Frame, out: &mut dyn io::Write) -> io::Result<()>;
-    fn cleanup(&mut self);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Viewport {
+    pub columns: u16,
+    pub rows: u16,
 }
 
-pub fn create(
-    mode: RendererMode,
-    no_alt_screen: bool,
-    reserved_rows: usize,
-) -> io::Result<Box<dyn Renderer>> {
-    let mode = match mode {
-        RendererMode::Auto => auto::select(no_alt_screen),
-        explicit => explicit,
-    };
-    match mode {
-        RendererMode::Graphic => Ok(Box::new(graphic::GraphicRenderer::new(reserved_rows))),
-        RendererMode::Block => Ok(Box::new(block::BlockRenderer::new(no_alt_screen))),
-        RendererMode::Ascii => Ok(Box::new(ascii::AsciiRenderer::new(no_alt_screen))),
-        RendererMode::Auto => unreachable!(),
-    }
+pub trait Renderer: Send {
+    fn render(
+        &mut self,
+        frame: &Frame,
+        viewport: Viewport,
+        out: &mut dyn io::Write,
+    ) -> io::Result<()>;
 }

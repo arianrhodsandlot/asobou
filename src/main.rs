@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod cores;
 mod emulation;
+mod game_session;
 mod input;
 mod paths;
 mod renderer;

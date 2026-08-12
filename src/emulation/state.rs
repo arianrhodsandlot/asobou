@@ -648,7 +648,7 @@ pub(crate) fn decompress(data: &[u8], capacity: usize) -> Vec<u8> {
     output
 }
 
-impl StateBackend for crate::emulation::libretro::Core {
+impl StateBackend for crate::emulation::libretro::LoadedGame {
     fn serialize(&self, data: &mut [u8]) -> bool {
         self.serialize_state(data)
     }

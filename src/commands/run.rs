@@ -4,7 +4,6 @@ use crossterm::event::{
 };
 use gilrs::{Axis, Button, EventType, GamepadId};
 use std::io::{self, Write};
-use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -332,17 +331,27 @@ fn poll_gamepads(
     input.update_gamepad(buttons);
 }
 
-fn rewind_run_frame(core: &crate::emulation::libretro::Core, frame_mailbox: &LatestFrameMailbox) {
-    crate::emulation::libretro::set_video_capture_enabled(true);
-    unsafe {
-        crate::emulation::libretro::run_frame(core);
-    }
-    let frame = crate::emulation::libretro::FRAME
-        .lock()
-        .ok()
-        .and_then(|guard| guard.as_ref().cloned());
+fn rewind_run_frame(
+    game: &crate::emulation::libretro::LoadedGame,
+    frame_mailbox: &LatestFrameMailbox,
+) {
+    game.set_video_capture_enabled(true);
+    game.run_frame();
+    let frame = game.latest_frame();
     if let Some(frame) = frame {
         frame_mailbox.publish(frame);
+    }
+}
+
+struct AudioSession<'a> {
+    game: &'a crate::emulation::libretro::LoadedGame,
+    backend: Box<dyn crate::audio::AudioBackend>,
+}
+
+impl Drop for AudioSession<'_> {
+    fn drop(&mut self) {
+        self.game.clear_audio_sink();
+        self.backend.stop();
     }
 }
 
@@ -435,8 +444,6 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     ctrlc::set_handler(|| RUNNING.store(false, Ordering::SeqCst))?;
     RUNNING.store(true, Ordering::SeqCst);
-    crate::emulation::libretro::set_joypad_buttons(0);
-
     std::fs::create_dir_all(&cores_dir).ok();
 
     let core_path = match resolve_core(
@@ -457,7 +464,7 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     let status_lines = status_lines(&input_bindings, status_settings);
     let renderer = crate::renderer::create(renderer_mode, primary_screen, status_lines.len())?;
-    let core = unsafe { crate::emulation::libretro::load_core(&core_path)? };
+    let core = crate::emulation::libretro::load_core(&core_path)?;
     let mut audio_backend = if muted {
         crate::audio::muted()
     } else {
@@ -471,330 +478,308 @@ pub fn run(config: RunConfig) -> Result<(), Box<dyn std::error::Error>> {
             None
         }
     };
-    crate::emulation::libretro::set_target_sample_rate(target_sample_rate);
-
-    unsafe {
-        let _version = (core.retro_api_version)();
-        crate::emulation::libretro::setup_callbacks(&core);
-        (core.retro_init)();
-
-        let mut sys_info: crate::emulation::libretro::RetroSystemInfo = mem::zeroed();
-        (core.retro_get_system_info)(&mut sys_info);
-
-        let loaded = crate::emulation::libretro::load_rom(&core, &rom)?;
-        if !loaded {
+    let game = match core.load_game(&rom, target_sample_rate) {
+        Ok(game) => game,
+        Err(crate::emulation::libretro::LoadGameError::Rejected) => {
             eprintln!("Failed to load ROM: {}", rom.display());
-            (core.retro_deinit)();
             return Ok(());
         }
+        Err(error) => return Err(error.into()),
+    };
 
-        let serialization_supported = core.supports_complete_serialization();
+    let serialization_supported = game.supports_complete_serialization();
+    if !serialization_supported {
+        eprintln!("Save states and rewind disabled: core does not support complete savestates");
+    }
+    let state_size = game.state_size().unwrap_or(0);
+    let core_name = crate::emulation::state::core_name_from_path(&core_path);
+    let game_name = rom
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if let Some(startup) = &startup_state {
         if !serialization_supported {
-            eprintln!("Save states and rewind disabled: core does not support complete savestates");
+            eprintln!(
+                "Error: core does not support savestates, cannot load {}",
+                startup.display()
+            );
+            drop(game);
+            std::process::exit(1);
         }
-        let state_size = core.state_size().unwrap_or(0);
-        let core_name = crate::emulation::state::core_name_from_path(&core_path);
-        let game_name = rom
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        if let Some(startup) = &startup_state {
-            if !serialization_supported {
-                eprintln!(
-                    "Error: core does not support savestates, cannot load {}",
-                    startup.display()
-                );
-                (core.retro_unload_game)();
-                (core.retro_deinit)();
-                std::process::exit(1);
-            }
-            if let Err(error) = crate::emulation::state::load_from_path(&core, startup) {
-                eprintln!("Error: failed to load state {}: {error}", startup.display());
-                (core.retro_unload_game)();
-                (core.retro_deinit)();
-                std::process::exit(1);
-            }
-        } else if resume && serialization_supported {
-            let _ =
-                crate::emulation::state::load_newest(&states_dir, &core, &core_name, &game_name);
+        if let Err(error) = crate::emulation::state::load_from_path(&game, startup) {
+            eprintln!("Error: failed to load state {}: {error}", startup.display());
+            drop(game);
+            std::process::exit(1);
         }
+    } else if resume && serialization_supported {
+        let _ = crate::emulation::state::load_newest(&states_dir, &game, &core_name, &game_name);
+    }
 
-        let mut av_info: crate::emulation::libretro::RetroSystemAvInfo = mem::zeroed();
-        (core.retro_get_system_av_info)(&mut av_info);
-        let w = av_info.geometry.base_width;
-        let h = av_info.geometry.base_height;
+    let av_info = game.av_info();
+    let w = av_info.geometry.base_width;
+    let h = av_info.geometry.base_height;
 
-        let audio_sink = match audio_backend.start(av_info.timing.sample_rate) {
-            Ok(sink) => sink,
-            Err(e) => {
-                eprintln!("Audio init failed: {e}, falling back to null");
-                audio_backend = crate::audio::muted();
-                audio_backend.start(av_info.timing.sample_rate)?
-            }
-        };
-        *crate::emulation::libretro::AUDIO.lock().unwrap() = Some(audio_sink);
+    let audio_sink = match audio_backend.start(av_info.timing.sample_rate) {
+        Ok(sink) => sink,
+        Err(e) => {
+            eprintln!("Audio init failed: {e}, falling back to null");
+            audio_backend = crate::audio::muted();
+            audio_backend.start(av_info.timing.sample_rate)?
+        }
+    };
+    game.install_audio_sink(audio_sink);
+    let audio_session = AudioSession {
+        game: &game,
+        backend: audio_backend,
+    };
 
-        let mut renderer = renderer;
-        renderer.setup(w, h);
+    let mut renderer = renderer;
+    renderer.setup(w, h);
 
-        let mut rewind = if rewind_settings.enabled && serialization_supported {
-            crate::emulation::rewind::Rewind::new(
-                state_size,
-                rewind_settings.granularity,
-                rewind_settings.buffer_size,
-            )
-        } else {
+    let mut rewind = if rewind_settings.enabled && serialization_supported {
+        crate::emulation::rewind::Rewind::new(
+            state_size,
+            rewind_settings.granularity,
+            rewind_settings.buffer_size,
+        )
+    } else {
+        None
+    };
+    if let Some(rewind) = rewind.as_mut() {
+        rewind.capture(&game, 0);
+    }
+
+    let terminal = TerminalGuard::enter()?;
+    let frame_mailbox = Arc::new(LatestFrameMailbox::new());
+    let render_mailbox = Arc::clone(&frame_mailbox);
+    let status_messages = Arc::new(Mutex::new(None::<(String, Instant)>));
+    let status_messages_render = Arc::clone(&status_messages);
+    let render_thread = thread::spawn(
+        move || -> io::Result<(io::Result<()>, Box<dyn crate::renderer::Renderer>)> {
+            let mut renderer = renderer;
+            let mut stdout = io::stdout().lock();
+            let result = (|| {
+                while let Some(frame) = render_mailbox.receive() {
+                    renderer.render(&frame, &mut stdout)?;
+                    let (columns, rows) = crossterm::terminal::size()?;
+                    let message = {
+                        let mut guard = status_messages_render.lock().unwrap();
+                        match &*guard {
+                            Some((text, at)) if at.elapsed() < STATUS_MESSAGE_DURATION => {
+                                Some(text.clone())
+                            }
+                            _ => {
+                                *guard = None;
+                                None
+                            }
+                        }
+                    };
+                    write_status_lines(
+                        &mut stdout,
+                        &status_lines,
+                        message.as_deref(),
+                        columns,
+                        rows,
+                    )?;
+                    stdout.flush()?;
+                }
+                Ok(())
+            })();
+            render_mailbox.close();
+            drop(stdout);
+            Ok((result, renderer))
+        },
+    );
+
+    let fps = if av_info.timing.fps.is_finite() && av_info.timing.fps > 0.0 {
+        av_info.timing.fps
+    } else {
+        60.0
+    };
+    let frame_duration = Duration::from_secs_f64(1.0 / fps);
+    let render_duration = Duration::from_secs_f64(1.0 / render_fps as f64);
+    let schedule_start = Instant::now();
+    let mut next_frame = schedule_start;
+    let mut next_render = schedule_start;
+    let mut input =
+        crate::input::InputState::with_bindings(input_bindings, terminal.release_events_supported);
+    let mut gamepads = match gilrs::Gilrs::new() {
+        Ok(gamepads) => Some(gamepads),
+        Err(error) => {
+            eprintln!("Gamepad input unavailable: {error}");
             None
-        };
-        if let Some(rewind) = rewind.as_mut() {
-            rewind.capture(&core, 0);
         }
+    };
+    let mut active_gamepad: Option<GamepadId> = None;
+    let mut ghostty_ctrl_c = crate::terminal::is_ghostty().then(GhosttyCtrlCWorkaround::default);
+    let mut input_error = None;
+    let set_message = |text: &str| {
+        if let Ok(mut guard) = status_messages.lock() {
+            *guard = Some((text.to_string(), Instant::now()));
+        }
+    };
+    let mut frame_count = 0u64;
 
-        let terminal = TerminalGuard::enter()?;
-        let frame_mailbox = Arc::new(LatestFrameMailbox::new());
-        let render_mailbox = Arc::clone(&frame_mailbox);
-        let status_messages = Arc::new(Mutex::new(None::<(String, Instant)>));
-        let status_messages_render = Arc::clone(&status_messages);
-        let render_thread = thread::spawn(
-            move || -> io::Result<(io::Result<()>, Box<dyn crate::renderer::Renderer>)> {
-                let mut renderer = renderer;
-                let mut stdout = io::stdout().lock();
-                let result = (|| {
-                    while let Some(frame) = render_mailbox.receive() {
-                        renderer.render(&frame, &mut stdout)?;
-                        let (columns, rows) = crossterm::terminal::size()?;
-                        let message = {
-                            let mut guard = status_messages_render.lock().unwrap();
-                            match &*guard {
-                                Some((text, at)) if at.elapsed() < STATUS_MESSAGE_DURATION => {
-                                    Some(text.clone())
-                                }
-                                _ => {
-                                    *guard = None;
-                                    None
-                                }
-                            }
-                        };
-                        write_status_lines(
-                            &mut stdout,
-                            &status_lines,
-                            message.as_deref(),
-                            columns,
-                            rows,
-                        )?;
-                        stdout.flush()?;
-                    }
-                    Ok(())
-                })();
-                render_mailbox.close();
-                drop(stdout);
-                Ok((result, renderer))
-            },
-        );
-
-        let fps = if av_info.timing.fps.is_finite() && av_info.timing.fps > 0.0 {
-            av_info.timing.fps
-        } else {
-            60.0
-        };
-        let frame_duration = Duration::from_secs_f64(1.0 / fps);
-        let render_duration = Duration::from_secs_f64(1.0 / render_fps as f64);
-        let schedule_start = Instant::now();
-        let mut next_frame = schedule_start;
-        let mut next_render = schedule_start;
-        let mut input = crate::input::InputState::with_bindings(
-            input_bindings,
-            terminal.release_events_supported,
-        );
-        let mut gamepads = match gilrs::Gilrs::new() {
-            Ok(gamepads) => Some(gamepads),
-            Err(error) => {
-                eprintln!("Gamepad input unavailable: {error}");
-                None
-            }
-        };
-        let mut active_gamepad: Option<GamepadId> = None;
-        let mut ghostty_ctrl_c =
-            crate::terminal::is_ghostty().then(GhosttyCtrlCWorkaround::default);
-        let mut input_error = None;
-        let set_message = |text: &str| {
-            if let Ok(mut guard) = status_messages.lock() {
-                *guard = Some((text.to_string(), Instant::now()));
-            }
-        };
-        let mut frame_count = 0u64;
-
-        while RUNNING.load(Ordering::SeqCst) {
-            loop {
-                match event::poll(Duration::ZERO) {
-                    Ok(true) => match event::read() {
-                        Ok(Event::Key(key)) => {
-                            let ghostty_ctrl_c_requested = ghostty_ctrl_c
-                                .as_mut()
-                                .is_some_and(|workaround| workaround.handle_key(key));
-                            input.handle_key(key, Instant::now());
-                            if ghostty_ctrl_c_requested || input.quit_requested() {
-                                RUNNING.store(false, Ordering::SeqCst);
-                            }
-                        }
-                        Ok(Event::FocusLost) => {
-                            input.clear();
-                            if let Some(workaround) = ghostty_ctrl_c.as_mut() {
-                                workaround.clear();
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(error) => {
-                            input.clear();
-                            input_error = Some(error);
+    while RUNNING.load(Ordering::SeqCst) {
+        loop {
+            match event::poll(Duration::ZERO) {
+                Ok(true) => match event::read() {
+                    Ok(Event::Key(key)) => {
+                        let ghostty_ctrl_c_requested = ghostty_ctrl_c
+                            .as_mut()
+                            .is_some_and(|workaround| workaround.handle_key(key));
+                        input.handle_key(key, Instant::now());
+                        if ghostty_ctrl_c_requested || input.quit_requested() {
                             RUNNING.store(false, Ordering::SeqCst);
-                            break;
                         }
-                    },
-                    Ok(false) => break,
+                    }
+                    Ok(Event::FocusLost) => {
+                        input.clear();
+                        if let Some(workaround) = ghostty_ctrl_c.as_mut() {
+                            workaround.clear();
+                        }
+                    }
+                    Ok(_) => {}
                     Err(error) => {
                         input.clear();
                         input_error = Some(error);
                         RUNNING.store(false, Ordering::SeqCst);
                         break;
                     }
+                },
+                Ok(false) => break,
+                Err(error) => {
+                    input.clear();
+                    input_error = Some(error);
+                    RUNNING.store(false, Ordering::SeqCst);
+                    break;
                 }
             }
+        }
 
-            if let Some(gamepads) = gamepads.as_mut() {
-                poll_gamepads(gamepads, &mut input, &mut active_gamepad);
-            }
-            if input.quit_requested() {
-                RUNNING.store(false, Ordering::SeqCst);
-            }
+        if let Some(gamepads) = gamepads.as_mut() {
+            poll_gamepads(gamepads, &mut input, &mut active_gamepad);
+        }
+        if input.quit_requested() {
+            RUNNING.store(false, Ordering::SeqCst);
+        }
 
-            input.expire(Instant::now());
-            if serialization_supported {
-                if input.take_save() {
-                    match crate::emulation::state::save_state(
-                        &states_dir,
-                        &core,
-                        state_size,
-                        &core_name,
-                        &game_name,
-                    ) {
-                        Ok(_) => set_message("State saved"),
-                        Err(error) => set_message(&format!("Save failed: {error}")),
-                    }
-                }
-                if input.take_load() {
-                    match crate::emulation::state::load_newest(
-                        &states_dir,
-                        &core,
-                        &core_name,
-                        &game_name,
-                    ) {
-                        Ok(Some(_)) => set_message("State loaded"),
-                        Ok(None) => set_message("No save state found"),
-                        Err(error) => set_message(&format!("Load failed: {error}")),
-                    }
+        input.expire(Instant::now());
+        if serialization_supported {
+            if input.take_save() {
+                match crate::emulation::state::save_state(
+                    &states_dir,
+                    &game,
+                    state_size,
+                    &core_name,
+                    &game_name,
+                ) {
+                    Ok(_) => set_message("State saved"),
+                    Err(error) => set_message(&format!("Save failed: {error}")),
                 }
             }
-            crate::emulation::libretro::set_joypad_buttons(input.button_mask());
-            if !RUNNING.load(Ordering::SeqCst) {
-                break;
+            if input.take_load() {
+                match crate::emulation::state::load_newest(
+                    &states_dir,
+                    &game,
+                    &core_name,
+                    &game_name,
+                ) {
+                    Ok(Some(_)) => set_message("State loaded"),
+                    Ok(None) => set_message("No save state found"),
+                    Err(error) => set_message(&format!("Load failed: {error}")),
+                }
             }
+        }
+        game.set_joypad_buttons(input.button_mask());
+        if !RUNNING.load(Ordering::SeqCst) {
+            break;
+        }
 
-            let rewound = if input.rewind_pressed() {
-                if let Some(rewind) = rewind.as_mut() {
-                    crate::emulation::libretro::set_audio_muted(true);
-                    let target = rewind.rewind(&core, frame_count, &mut || {
-                        rewind_run_frame(&core, &frame_mailbox)
-                    });
-                    crate::emulation::libretro::set_audio_muted(false);
-                    match target {
-                        Some(target) => {
-                            frame_count = target;
-                            true
-                        }
-                        None => false,
+        let rewound = if input.rewind_pressed() {
+            if let Some(rewind) = rewind.as_mut() {
+                game.set_audio_muted(true);
+                let target = rewind.rewind(&game, frame_count, &mut || {
+                    rewind_run_frame(&game, &frame_mailbox)
+                });
+                game.set_audio_muted(false);
+                match target {
+                    Some(target) => {
+                        frame_count = target;
+                        true
                     }
-                } else {
-                    false
+                    None => false,
                 }
             } else {
                 false
-            };
-
-            if !rewound {
-                let capture_frame = Instant::now() >= next_render && frame_mailbox.wants_frame();
-                crate::emulation::libretro::set_video_capture_enabled(capture_frame);
-                crate::emulation::libretro::run_frame(&core);
-                frame_count += 1;
-                if let Some(rewind) = rewind.as_mut() {
-                    rewind.capture(&core, frame_count);
-                }
-
-                if capture_frame {
-                    let frame = crate::emulation::libretro::FRAME
-                        .lock()
-                        .ok()
-                        .and_then(|guard| guard.as_ref().cloned());
-                    if let Some(frame) = frame
-                        && !frame_mailbox.publish(frame)
-                    {
-                        break;
-                    }
-                    next_render += render_duration;
-                    let now = Instant::now();
-                    if next_render < now {
-                        next_render = now;
-                    }
-                }
             }
-
-            next_frame += frame_duration;
-            let now = Instant::now();
-            if let Some(delay) = next_frame.checked_duration_since(now) {
-                thread::sleep(delay);
-            } else {
-                next_frame = now;
-            }
-        }
-
-        input.clear();
-        crate::emulation::libretro::set_joypad_buttons(0);
-        crate::emulation::libretro::set_video_capture_enabled(true);
-        frame_mailbox.close();
-        let (render_result, mut renderer) = match render_thread.join() {
-            Ok(result) => result?,
-            Err(_) => return Err(io::Error::other("renderer thread panicked").into()),
+        } else {
+            false
         };
-        drop(terminal);
-        renderer.cleanup();
-        render_result?;
 
-        if serialization_supported && save_on_exit {
-            match crate::emulation::state::save_state(
-                &states_dir,
-                &core,
-                state_size,
-                &core_name,
-                &game_name,
-            ) {
-                Ok(path) => println!("Saved state: {}", path.display()),
-                Err(error) => eprintln!("Warning: failed to save state on exit: {error}"),
+        if !rewound {
+            let capture_frame = Instant::now() >= next_render && frame_mailbox.wants_frame();
+            game.set_video_capture_enabled(capture_frame);
+            game.run_frame();
+            frame_count += 1;
+            if let Some(rewind) = rewind.as_mut() {
+                rewind.capture(&game, frame_count);
+            }
+
+            if capture_frame {
+                let frame = game.latest_frame();
+                if let Some(frame) = frame
+                    && !frame_mailbox.publish(frame)
+                {
+                    break;
+                }
+                next_render += render_duration;
+                let now = Instant::now();
+                if next_render < now {
+                    next_render = now;
+                }
             }
         }
 
-        if let Ok(mut audio) = crate::emulation::libretro::AUDIO.lock() {
-            audio.take();
-        }
-        audio_backend.stop();
-
-        (core.retro_unload_game)();
-        (core.retro_deinit)();
-
-        if let Some(error) = input_error {
-            return Err(error.into());
+        next_frame += frame_duration;
+        let now = Instant::now();
+        if let Some(delay) = next_frame.checked_duration_since(now) {
+            thread::sleep(delay);
+        } else {
+            next_frame = now;
         }
     }
 
+    input.clear();
+    game.set_joypad_buttons(0);
+    game.set_video_capture_enabled(true);
+    frame_mailbox.close();
+    let (render_result, mut renderer) = match render_thread.join() {
+        Ok(result) => result?,
+        Err(_) => return Err(io::Error::other("renderer thread panicked").into()),
+    };
+    drop(terminal);
+    renderer.cleanup();
+    render_result?;
+
+    if serialization_supported && save_on_exit {
+        match crate::emulation::state::save_state(
+            &states_dir,
+            &game,
+            state_size,
+            &core_name,
+            &game_name,
+        ) {
+            Ok(path) => println!("Saved state: {}", path.display()),
+            Err(error) => eprintln!("Warning: failed to save state on exit: {error}"),
+        }
+    }
+
+    drop(audio_session);
+
+    if let Some(error) = input_error {
+        return Err(error.into());
+    }
     Ok(())
 }
 

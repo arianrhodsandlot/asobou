@@ -2,27 +2,16 @@ pub mod ascii;
 pub mod block;
 pub mod graphic;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::io;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum RendererMode {
     Auto,
     Graphic,
     Block,
     Ascii,
-}
-
-impl RendererMode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Graphic => "graphic",
-            Self::Block => "block",
-            Self::Ascii => "ascii",
-        }
-    }
 }
 
 pub struct Frame {

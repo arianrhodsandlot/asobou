@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::ffi::OsStr;
 use std::fmt;
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use toml_edit::{DocumentMut, Item, Table};
 
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct Config {
     input: InputConfig,
@@ -20,14 +20,14 @@ struct Config {
     paths: PathsConfig,
 }
 
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct PathsConfig {
     data_dir: Option<String>,
     cache_dir: Option<String>,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct DisplayConfig {
     renderer: crate::renderer::RendererMode,
@@ -45,7 +45,7 @@ impl Default for DisplayConfig {
     }
 }
 
-#[derive(Clone, Copy, Default, Deserialize)]
+#[derive(Clone, Copy, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct AudioConfig {
     muted: bool,
@@ -63,7 +63,7 @@ pub struct AudioSettings {
     pub muted: bool,
 }
 
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct StateConfig {
     save_on_exit: bool,
@@ -76,7 +76,7 @@ pub struct StateSettings {
     pub resume: bool,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct StatusConfig {
     enabled: bool,
@@ -101,7 +101,7 @@ pub struct StatusSettings {
     pub controls: bool,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct RewindConfig {
     enabled: bool,
@@ -143,7 +143,7 @@ pub struct Settings {
     pub paths: PathSettings,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct InputConfig {
     up: String,
@@ -215,10 +215,7 @@ pub enum ConfigError {
         path: PathBuf,
         reason: String,
     },
-    UnknownKey {
-        key: String,
-        suggestion: Option<&'static str>,
-    },
+    UnknownKey(String),
     UnsetKey(String),
     InvalidValue {
         key: String,
@@ -263,13 +260,7 @@ impl fmt::Display for ConfigError {
             Self::Invalid { path, reason } => {
                 write!(formatter, "invalid config {}: {reason}", path.display())
             }
-            Self::UnknownKey { key, suggestion } => {
-                write!(formatter, "unknown config key \"{key}\"")?;
-                if let Some(suggestion) = suggestion {
-                    write!(formatter, "\nDid you mean \"{suggestion}\"?")?;
-                }
-                Ok(())
-            }
+            Self::UnknownKey(key) => write!(formatter, "unknown config key \"{key}\""),
             Self::UnsetKey(key) => write!(formatter, "config key \"{key}\" is unset"),
             Self::InvalidValue {
                 key,
@@ -462,295 +453,118 @@ fn settings_from_config(config: Config, path: &Path) -> Result<Settings, ConfigE
     })
 }
 
-enum ConfigValue {
-    String(String),
-    Boolean(bool),
-    Integer(i64),
-}
-
-impl ConfigValue {
-    fn plain(&self) -> String {
-        match self {
-            Self::String(value) => value.clone(),
-            Self::Boolean(value) => value.to_string(),
-            Self::Integer(value) => value.to_string(),
-        }
-    }
-
-    fn into_item(self) -> Item {
-        match self {
-            Self::String(value) => toml_edit::value(value),
-            Self::Boolean(value) => toml_edit::value(value),
-            Self::Integer(value) => toml_edit::value(value),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum ConfigValueKind {
-    String,
-    Boolean,
-    Integer,
-}
-
-struct ConfigKey {
-    name: &'static str,
-    kind: ConfigValueKind,
-    value: fn(&Config) -> Option<ConfigValue>,
-}
-
-const CONFIG_KEYS: &[ConfigKey] = &[
-    ConfigKey {
-        name: "input.up",
-        kind: ConfigValueKind::String,
-        value: |config| Some(ConfigValue::String(config.input.up.clone())),
-    },
-    ConfigKey {
-        name: "input.down",
-        kind: ConfigValueKind::String,
-        value: |config| Some(ConfigValue::String(config.input.down.clone())),
-    },
-    ConfigKey {
-        name: "input.left",
-        kind: ConfigValueKind::String,
-        value: |config| Some(ConfigValue::String(config.input.left.clone())),
-    },
-    ConfigKey {
-        name: "input.right",
-        kind: ConfigValueKind::String,
-        value: |config| Some(ConfigValue::String(config.input.right.clone())),
-    },
-    ConfigKey {
-        name: "input.a",
-        kind: ConfigValueKind::String,
-        value: |config| Some(ConfigValue::String(config.input.a.clone())),
-    },
-    ConfigKey {
-        name: "input.b",
-        kind: ConfigValueKind::String,
-        value: |config| Some(ConfigValue::String(config.input.b.clone())),
-    },
-    ConfigKey {
-        name: "input.x",
-        kind: ConfigValueKind::String,
-        value: |config| Some(ConfigValue::String(config.input.x.clone())),
-    },
-    ConfigKey {
-        name: "input.y",
-        kind: ConfigValueKind::String,
-        value: |config| Some(ConfigValue::String(config.input.y.clone())),
-    },
-    ConfigKey {
-        name: "input.start",
-        kind: ConfigValueKind::String,
-        value: |config| Some(ConfigValue::String(config.input.start.clone())),
-    },
-    ConfigKey {
-        name: "input.select",
-        kind: ConfigValueKind::String,
-        value: |config| Some(ConfigValue::String(config.input.select.clone())),
-    },
-    ConfigKey {
-        name: "input.l",
-        kind: ConfigValueKind::String,
-        value: |config| config.input.l.clone().map(ConfigValue::String),
-    },
-    ConfigKey {
-        name: "input.r",
-        kind: ConfigValueKind::String,
-        value: |config| config.input.r.clone().map(ConfigValue::String),
-    },
-    ConfigKey {
-        name: "input.l2",
-        kind: ConfigValueKind::String,
-        value: |config| config.input.l2.clone().map(ConfigValue::String),
-    },
-    ConfigKey {
-        name: "input.r2",
-        kind: ConfigValueKind::String,
-        value: |config| config.input.r2.clone().map(ConfigValue::String),
-    },
-    ConfigKey {
-        name: "input.l3",
-        kind: ConfigValueKind::String,
-        value: |config| config.input.l3.clone().map(ConfigValue::String),
-    },
-    ConfigKey {
-        name: "input.r3",
-        kind: ConfigValueKind::String,
-        value: |config| config.input.r3.clone().map(ConfigValue::String),
-    },
-    ConfigKey {
-        name: "input.quit",
-        kind: ConfigValueKind::String,
-        value: |config| Some(ConfigValue::String(config.input.quit.clone())),
-    },
-    ConfigKey {
-        name: "input.rewind",
-        kind: ConfigValueKind::String,
-        value: |config| Some(ConfigValue::String(config.input.rewind.clone())),
-    },
-    ConfigKey {
-        name: "input.save_state",
-        kind: ConfigValueKind::String,
-        value: |config| Some(ConfigValue::String(config.input.save_state.clone())),
-    },
-    ConfigKey {
-        name: "input.load_state",
-        kind: ConfigValueKind::String,
-        value: |config| Some(ConfigValue::String(config.input.load_state.clone())),
-    },
-    ConfigKey {
-        name: "display.renderer",
-        kind: ConfigValueKind::String,
-        value: |config| Some(ConfigValue::String(config.display.renderer.as_str().into())),
-    },
-    ConfigKey {
-        name: "display.fps",
-        kind: ConfigValueKind::Integer,
-        value: |config| Some(ConfigValue::Integer(i64::from(config.display.fps))),
-    },
-    ConfigKey {
-        name: "display.primary_screen",
-        kind: ConfigValueKind::Boolean,
-        value: |config| Some(ConfigValue::Boolean(config.display.primary_screen)),
-    },
-    ConfigKey {
-        name: "audio.muted",
-        kind: ConfigValueKind::Boolean,
-        value: |config| Some(ConfigValue::Boolean(config.audio.muted)),
-    },
-    ConfigKey {
-        name: "rewind.enabled",
-        kind: ConfigValueKind::Boolean,
-        value: |config| Some(ConfigValue::Boolean(config.rewind.enabled)),
-    },
-    ConfigKey {
-        name: "rewind.granularity",
-        kind: ConfigValueKind::Integer,
-        value: |config| {
-            Some(ConfigValue::Integer(
-                i64::try_from(config.rewind.granularity).unwrap_or(i64::MAX),
-            ))
-        },
-    },
-    ConfigKey {
-        name: "rewind.buffer_size_mb",
-        kind: ConfigValueKind::Integer,
-        value: |config| {
-            Some(ConfigValue::Integer(
-                i64::try_from(config.rewind.buffer_size_mb).unwrap_or(i64::MAX),
-            ))
-        },
-    },
-    ConfigKey {
-        name: "state.save_on_exit",
-        kind: ConfigValueKind::Boolean,
-        value: |config| Some(ConfigValue::Boolean(config.state.save_on_exit)),
-    },
-    ConfigKey {
-        name: "state.resume",
-        kind: ConfigValueKind::Boolean,
-        value: |config| Some(ConfigValue::Boolean(config.state.resume)),
-    },
-    ConfigKey {
-        name: "status.enabled",
-        kind: ConfigValueKind::Boolean,
-        value: |config| Some(ConfigValue::Boolean(config.status.enabled)),
-    },
-    ConfigKey {
-        name: "status.gamepad",
-        kind: ConfigValueKind::Boolean,
-        value: |config| Some(ConfigValue::Boolean(config.status.gamepad)),
-    },
-    ConfigKey {
-        name: "status.controls",
-        kind: ConfigValueKind::Boolean,
-        value: |config| Some(ConfigValue::Boolean(config.status.controls)),
-    },
-    ConfigKey {
-        name: "paths.data_dir",
-        kind: ConfigValueKind::String,
-        value: |config| {
-            Some(ConfigValue::String(
-                crate::paths::data_base(config.paths.data_dir.as_deref())
-                    .to_string_lossy()
-                    .into_owned(),
-            ))
-        },
-    },
-    ConfigKey {
-        name: "paths.cache_dir",
-        kind: ConfigValueKind::String,
-        value: |config| {
-            Some(ConfigValue::String(
-                crate::paths::cache_base(config.paths.cache_dir.as_deref())
-                    .to_string_lossy()
-                    .into_owned(),
-            ))
-        },
-    },
+const CONFIG_KEYS: &[&str] = &[
+    "input.up",
+    "input.down",
+    "input.left",
+    "input.right",
+    "input.a",
+    "input.b",
+    "input.x",
+    "input.y",
+    "input.start",
+    "input.select",
+    "input.l",
+    "input.r",
+    "input.l2",
+    "input.r2",
+    "input.l3",
+    "input.r3",
+    "input.quit",
+    "input.rewind",
+    "input.save_state",
+    "input.load_state",
+    "display.renderer",
+    "display.fps",
+    "display.primary_screen",
+    "audio.muted",
+    "rewind.enabled",
+    "rewind.granularity",
+    "rewind.buffer_size_mb",
+    "state.save_on_exit",
+    "state.resume",
+    "status.enabled",
+    "status.gamepad",
+    "status.controls",
+    "paths.data_dir",
+    "paths.cache_dir",
 ];
 
-fn edit_distance(left: &str, right: &str) -> usize {
-    let mut previous: Vec<usize> = (0..=right.chars().count()).collect();
-    for (left_index, left_char) in left.chars().enumerate() {
-        let mut current = vec![left_index + 1];
-        for (right_index, right_char) in right.chars().enumerate() {
-            current.push(std::cmp::min(
-                std::cmp::min(current[right_index] + 1, previous[right_index + 1] + 1),
-                previous[right_index] + usize::from(left_char != right_char),
-            ));
-        }
-        previous = current;
-    }
-    previous.last().copied().unwrap_or_default()
-}
-
-fn unknown_key(key: &str) -> ConfigError {
-    let max_distance = if key.len() < 8 { 2 } else { 3 };
-    let suggestion = CONFIG_KEYS
-        .iter()
-        .map(|candidate| (candidate.name, edit_distance(key, candidate.name)))
-        .filter(|(_, distance)| *distance <= max_distance)
-        .min_by_key(|(_, distance)| *distance)
-        .map(|(name, _)| name);
-    ConfigError::UnknownKey {
-        key: key.into(),
-        suggestion,
-    }
-}
-
-fn config_key(key: &str) -> Result<&'static ConfigKey, ConfigError> {
+fn config_key(key: &str) -> Result<&'static str, ConfigError> {
     CONFIG_KEYS
         .iter()
-        .find(|candidate| candidate.name == key)
-        .ok_or_else(|| unknown_key(key))
+        .copied()
+        .find(|candidate| *candidate == key)
+        .ok_or_else(|| ConfigError::UnknownKey(key.into()))
 }
 
-fn parse_value(key: &ConfigKey, value: &str) -> Result<ConfigValue, ConfigError> {
-    match key.kind {
-        ConfigValueKind::String => Ok(ConfigValue::String(value.into())),
-        ConfigValueKind::Boolean => {
-            value
-                .parse()
-                .map(ConfigValue::Boolean)
-                .map_err(|_| ConfigError::InvalidValue {
-                    key: key.name.into(),
-                    value: value.into(),
-                    expected: "true or false",
-                })
-        }
-        ConfigValueKind::Integer => {
-            value
-                .parse()
-                .map(ConfigValue::Integer)
-                .map_err(|_| ConfigError::InvalidValue {
-                    key: key.name.into(),
-                    value: value.into(),
-                    expected: "a decimal integer",
-                })
-        }
+fn parse_value(key: &str, current: Option<&toml::Value>, value: &str) -> Result<Item, ConfigError> {
+    let invalid = |expected| ConfigError::InvalidValue {
+        key: key.into(),
+        value: value.into(),
+        expected,
+    };
+    match current {
+        Some(toml::Value::Boolean(_)) => value
+            .parse::<bool>()
+            .map(toml_edit::value)
+            .map_err(|_| invalid("true or false")),
+        Some(toml::Value::Integer(_)) => value
+            .parse::<i64>()
+            .map(toml_edit::value)
+            .map_err(|_| invalid("a decimal integer")),
+        _ => Ok(toml_edit::value(value)),
+    }
+}
+
+fn effective_config(config: &Config, path: &Path) -> Result<toml::Value, ConfigError> {
+    let mut value = toml::Value::try_from(config).map_err(|error| ConfigError::Invalid {
+        path: path.to_path_buf(),
+        reason: error.to_string(),
+    })?;
+    let Some(root) = value.as_table_mut() else {
+        return Err(ConfigError::Invalid {
+            path: path.to_path_buf(),
+            reason: "configuration did not serialize as a table".into(),
+        });
+    };
+    let paths = root
+        .entry("paths")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let Some(paths) = paths.as_table_mut() else {
+        return Err(ConfigError::Invalid {
+            path: path.to_path_buf(),
+            reason: "[paths] did not serialize as a table".into(),
+        });
+    };
+    paths.insert(
+        "data_dir".into(),
+        toml::Value::String(
+            crate::paths::data_base(config.paths.data_dir.as_deref())
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    );
+    paths.insert(
+        "cache_dir".into(),
+        toml::Value::String(
+            crate::paths::cache_base(config.paths.cache_dir.as_deref())
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    );
+    Ok(value)
+}
+
+fn effective_value<'a>(config: &'a toml::Value, key: &str) -> Option<&'a toml::Value> {
+    let (section, name) = key_parts(key);
+    config.get(section)?.get(name)
+}
+
+fn plain_value(value: &toml::Value) -> String {
+    match value {
+        toml::Value::String(value) => value.clone(),
+        value => value.to_string(),
     }
 }
 
@@ -782,11 +596,11 @@ fn validated_document(document: &DocumentMut, path: &Path) -> Result<Config, Con
     Ok(config)
 }
 
-fn key_parts(key: &ConfigKey) -> (&str, &str) {
-    key.name.split_once('.').unwrap()
+fn key_parts(key: &str) -> (&str, &str) {
+    key.split_once('.').unwrap()
 }
 
-fn key_is_stored(document: &DocumentMut, key: &ConfigKey) -> bool {
+fn key_is_stored(document: &DocumentMut, key: &str) -> bool {
     let (section, name) = key_parts(key);
     document
         .get(section)
@@ -849,12 +663,13 @@ pub fn list() -> Result<Vec<ConfigEntry>, ConfigError> {
     let path = config_path()?;
     let (contents, config) = read_config(&path)?;
     let document = parse_document(contents.as_deref().unwrap_or(""), &path)?;
+    let effective = effective_config(&config, &path)?;
     Ok(CONFIG_KEYS
         .iter()
-        .map(|key| ConfigEntry {
-            key: key.name,
-            value: (key.value)(&config)
-                .map(|value| value.plain())
+        .map(|&key| ConfigEntry {
+            key,
+            value: effective_value(&effective, key)
+                .map(plain_value)
                 .unwrap_or_else(|| "<unset>".into()),
             configured: key_is_stored(&document, key),
         })
@@ -865,24 +680,27 @@ pub fn get(key: &str) -> Result<String, ConfigError> {
     let key = config_key(key)?;
     let path = config_path()?;
     let (_, config) = read_config(&path)?;
-    (key.value)(&config)
-        .map(|value| value.plain())
-        .ok_or_else(|| ConfigError::UnsetKey(key.name.into()))
+    effective_value(&effective_config(&config, &path)?, key)
+        .map(plain_value)
+        .ok_or_else(|| ConfigError::UnsetKey(key.into()))
 }
 
 pub fn set(key: &str, value: &str) -> Result<String, ConfigError> {
     let key = config_key(key)?;
-    let value = parse_value(key, value)?;
     let path = config_path()?;
-    let (contents, _) = read_config(&path)?;
+    let (contents, current) = read_config(&path)?;
+    let effective = effective_config(&current, &path)?;
+    let value = parse_value(key, effective_value(&effective, key), value)?;
     let mut document = parse_document(contents.as_deref().unwrap_or(""), &path)?;
     let (section, name) = key_parts(key);
     if !document.contains_key(section) {
         document[section] = Item::Table(Table::new());
     }
-    document[section][name] = value.into_item();
+    document[section][name] = value;
     let config = validated_document(&document, &path)?;
-    let effective = (key.value)(&config).unwrap().plain();
+    let effective = effective_value(&effective_config(&config, &path)?, key)
+        .map(plain_value)
+        .ok_or_else(|| ConfigError::UnsetKey(key.into()))?;
     write_document(&path, &document)?;
     Ok(effective)
 }
@@ -893,7 +711,7 @@ pub fn unset(key: &str) -> Result<Option<String>, ConfigError> {
     let (contents, config) = read_config(&path)?;
     let (section, name) = key_parts(key);
     let Some(contents) = contents else {
-        return Ok((key.value)(&config).map(|value| value.plain()));
+        return Ok(effective_value(&effective_config(&config, &path)?, key).map(plain_value));
     };
     let mut document = parse_document(&contents, &path)?;
     let removed = document
@@ -905,7 +723,7 @@ pub fn unset(key: &str) -> Result<Option<String>, ConfigError> {
     if removed {
         write_document(&path, &document)?;
     }
-    Ok((key.value)(&config).map(|value| value.plain()))
+    Ok(effective_value(&effective_config(&config, &path)?, key).map(plain_value))
 }
 
 pub fn edit() -> Result<(), ConfigError> {

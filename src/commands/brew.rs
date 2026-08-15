@@ -3,45 +3,15 @@ use std::path::{Path, PathBuf};
 
 const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 
-#[derive(Debug)]
-struct Source {
-    extension: &'static str,
-    repository: &'static str,
-}
-
-const SOURCES: &[Source] = &[
-    Source {
-        extension: "gbc",
-        repository: "retrobrews/gbc-games",
-    },
-    Source {
-        extension: "rom",
-        repository: "retrobrews/colecovision-games",
-    },
-    Source {
-        extension: "nes",
-        repository: "retrobrews/nes-games",
-    },
-    Source {
-        extension: "sms",
-        repository: "retrobrews/sms-games",
-    },
-    Source {
-        extension: "gba",
-        repository: "retrobrews/gba-games",
-    },
-    Source {
-        extension: "sfc",
-        repository: "retrobrews/snes-games",
-    },
-    Source {
-        extension: "d64",
-        repository: "retrobrews/c64-games",
-    },
-    Source {
-        extension: "tap",
-        repository: "retrobrews/zxspectrum-games",
-    },
+const SOURCES: &[(&str, &str)] = &[
+    ("gbc", "retrobrews/gbc-games"),
+    ("rom", "retrobrews/colecovision-games"),
+    ("nes", "retrobrews/nes-games"),
+    ("sms", "retrobrews/sms-games"),
+    ("gba", "retrobrews/gba-games"),
+    ("sfc", "retrobrews/snes-games"),
+    ("d64", "retrobrews/c64-games"),
+    ("tap", "retrobrews/zxspectrum-games"),
 ];
 
 pub fn download(game: &str, cache_dir: &Path) -> Result<PathBuf, String> {
@@ -114,7 +84,7 @@ fn cached_rom(cache_dir: &Path, game: &str) -> Option<PathBuf> {
     cached.is_file().then_some(cached)
 }
 
-fn source_for(game: &str) -> Result<&'static Source, String> {
+fn source_for(game: &str) -> Result<&'static str, String> {
     let path = Path::new(game);
     if path.file_name().and_then(|name| name.to_str()) != Some(game) {
         return Err(format!("Game must be a filename, not a path: {game}"));
@@ -126,14 +96,15 @@ fn source_for(game: &str) -> Result<&'static Source, String> {
         .ok_or_else(|| format!("Unsupported homebrew game: {game}"))?;
     SOURCES
         .iter()
-        .find(|source| source.extension.eq_ignore_ascii_case(extension))
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(extension))
+        .map(|(_, repository)| *repository)
         .ok_or_else(|| format!("Unsupported homebrew game extension: .{extension}"))
 }
 
-fn source_url(source: &Source, game: &str) -> String {
+fn source_url(repository: &str, game: &str) -> String {
     format!(
         "https://raw.githubusercontent.com/{}/refs/heads/master/{}",
-        source.repository,
+        repository,
         percent_encode_path_segment(game)
     )
 }
@@ -169,7 +140,7 @@ mod tests {
         ];
 
         for (game, repository) in cases {
-            assert_eq!(source_for(game).unwrap().repository, repository);
+            assert_eq!(source_for(game).unwrap(), repository);
         }
     }
 

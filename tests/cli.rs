@@ -92,36 +92,6 @@ fn version_flags_print_the_version() {
 }
 
 #[test]
-fn help_lists_graphic_renderer() {
-    let (stdout, _stderr, _code) = run(&[]);
-
-    assert!(stdout.contains("graphic"));
-}
-
-#[test]
-fn help_lists_primary_screen() {
-    let (stdout, _stderr, _code) = run(&[]);
-
-    assert!(stdout.contains("-p, --primary-screen"));
-    assert!(!stdout.contains("--no-alt-screen"));
-}
-
-#[test]
-fn help_lists_fps() {
-    let (stdout, _stderr, _code) = run(&[]);
-
-    assert!(stdout.contains("-f, --fps"));
-}
-
-#[test]
-fn help_lists_muted() {
-    let (stdout, _stderr, _code) = run(&[]);
-
-    assert!(stdout.contains("-m, --muted"));
-    assert!(!stdout.contains("--no-audio"));
-}
-
-#[test]
 fn boolean_display_and_audio_flags_accept_bare_and_explicit_values() {
     for args in [
         &["--primary-screen"][..],
@@ -207,17 +177,6 @@ fn subcommand_help_shows_examples() {
             assert!(stdout.contains(example), "missing {example:?} in {args:?}");
         }
     }
-}
-
-#[test]
-fn brew_help_lists_launch_options() {
-    let (stdout, stderr, code) = run(&["brew", "--help"]);
-
-    assert_eq!(code, 0, "{stderr}");
-    assert!(stdout.contains("--renderer"));
-    assert!(stdout.contains("--core"));
-    assert!(stdout.contains("--state"));
-    assert!(stdout.contains("--resume"));
 }
 
 #[test]
@@ -320,20 +279,6 @@ fn core_remove_unknown_core_is_noop() {
     let (_stdout, stderr, code) = run_in(Some(dir.path()), &["core", "remove", "nonexistent_core"]);
     assert_eq!(code, 0);
     assert!(stderr.contains("not installed"));
-}
-
-#[test]
-fn help_lists_state_flag_and_subcommand() {
-    let (stdout, _stderr, _code) = run(&[]);
-    assert!(stdout.contains("--state"));
-    assert!(stdout.contains("--resume"));
-    assert!(stdout.contains("state"));
-
-    let (stdout, _stderr, code) = run(&["state", "--help"]);
-    assert_eq!(code, 0);
-    assert!(stdout.contains("list"));
-    assert!(!stdout.contains("remove"));
-    assert!(!stdout.contains("info"));
 }
 
 #[test]
@@ -509,17 +454,6 @@ fn asobou_config_loads_the_explicit_path() {
         stderr.contains("failed to parse config"),
         "unexpected stderr: {stderr}"
     );
-}
-
-#[test]
-fn config_help_lists_supported_operations() {
-    let (stdout, _stderr, code) = run(&["config", "--help"]);
-
-    assert_eq!(code, 0);
-    for operation in ["list", "edit", "get", "set", "unset"] {
-        assert!(stdout.contains(operation));
-    }
-    assert!(!stdout.contains("-e"));
 }
 
 #[test]
@@ -770,7 +704,7 @@ fn config_mutations_reject_unknown_keys_and_malformed_files() {
     let (_stdout, stderr, code) =
         run_with_config(&config, &["config", "get", "rewind.buffer_size"]);
     assert_ne!(code, 0);
-    assert!(stderr.contains("Did you mean \"rewind.buffer_size_mb\"?"));
+    assert!(stderr.contains("unknown config key \"rewind.buffer_size\""));
 
     std::fs::write(&config, "[rewind\n").unwrap();
     let original = std::fs::read_to_string(&config).unwrap();

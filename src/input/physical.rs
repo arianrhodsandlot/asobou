@@ -1,4 +1,3 @@
-use std::fmt;
 use std::io;
 use std::time::Instant;
 
@@ -36,15 +35,6 @@ pub struct InputSnapshot {
     pub load_requested: bool,
 }
 
-#[derive(Debug)]
-pub struct GamepadUnavailable(String);
-
-impl fmt::Display for GamepadUnavailable {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
 pub struct PhysicalInput {
     state: InputState,
     gamepads: Option<gilrs::Gilrs>,
@@ -58,10 +48,10 @@ impl PhysicalInput {
     pub fn new(
         bindings: InputBindings,
         capabilities: crate::terminal::InputCapabilities,
-    ) -> (Self, Option<GamepadUnavailable>) {
+    ) -> (Self, Option<String>) {
         let (gamepads, warning) = match gilrs::Gilrs::new() {
             Ok(gamepads) => (Some(gamepads), None),
-            Err(error) => (None, Some(GamepadUnavailable(error.to_string()))),
+            Err(error) => (None, Some(error.to_string())),
         };
         (
             Self::from_parts(

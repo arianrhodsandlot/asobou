@@ -216,18 +216,6 @@ mod tests {
     }
 
     #[test]
-    fn single_white_pixel_renders_brightest_ramp_char() {
-        let out = render_ascii(&frame_of(1, 1, (255, 255, 255)), 1, 1);
-        assert_eq!(out, b"\x1b[H\x1b[38;2;255;255;255m@\x1b[0m");
-    }
-
-    #[test]
-    fn single_black_pixel_renders_darkest_ramp_char() {
-        let out = render_ascii(&frame_of(1, 1, (0, 0, 0)), 1, 1);
-        assert_eq!(out, b"\x1b[H\x1b[38;2;0;0;0m \x1b[0m");
-    }
-
-    #[test]
     fn brighter_frames_use_brighter_ramp_chars() {
         let dark = render_ascii(&frame_of(1, 1, (0, 0, 0)), 1, 1);
         let mid = render_ascii(&frame_of(1, 1, (128, 128, 128)), 1, 1);

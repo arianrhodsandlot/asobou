@@ -21,7 +21,7 @@ pub fn core_extension() -> &'static str {
     core_extension_for(std::env::consts::OS)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy)]
 struct BuildbotTarget {
     path: &'static str,
     archive_suffix: &'static str,
@@ -41,94 +41,20 @@ impl BuildbotTarget {
     }
 }
 
-const LINUX_AARCH64: BuildbotTarget = BuildbotTarget {
-    path: "linux/aarch64/latest/",
-    archive_suffix: "_libretro",
-};
-
-const LINUX_X86_64: BuildbotTarget = BuildbotTarget {
-    path: "linux/x86_64/latest/",
-    archive_suffix: "_libretro",
-};
-
-const LINUX_X86: BuildbotTarget = BuildbotTarget {
-    path: "linux/x86/latest/",
-    archive_suffix: "_libretro",
-};
-
-const LINUX_ARMHF: BuildbotTarget = BuildbotTarget {
-    path: "linux/armhf/latest/",
-    archive_suffix: "_libretro",
-};
-
-const MACOS_GENERIC: BuildbotTarget = BuildbotTarget {
-    path: "apple/osx/x86_64/latest/",
-    archive_suffix: "_libretro",
-};
-
-const MACOS_ARM64: BuildbotTarget = BuildbotTarget {
-    path: "apple/osx/arm64/latest/",
-    archive_suffix: "_libretro",
-};
-
-const MACOS_PPC: BuildbotTarget = BuildbotTarget {
-    path: "apple/osx/ppc/latest/",
-    archive_suffix: "_libretro",
-};
-
-const IOS: BuildbotTarget = BuildbotTarget {
-    path: "apple/ios/latest/",
-    archive_suffix: "_libretro_ios",
-};
-
-const WINDOWS_X86: BuildbotTarget = BuildbotTarget {
-    path: "windows/x86/latest/",
-    archive_suffix: "_libretro",
-};
-
-const WINDOWS_X86_64: BuildbotTarget = BuildbotTarget {
-    path: "windows/x86_64/latest/",
-    archive_suffix: "_libretro",
-};
-
-const ANDROID_ARM64: BuildbotTarget = BuildbotTarget {
-    path: "android/latest/arm64-v8a/",
-    archive_suffix: "_libretro_android",
-};
-
-const ANDROID_ARMV7: BuildbotTarget = BuildbotTarget {
-    path: "android/latest/armeabi-v7a/",
-    archive_suffix: "_libretro_android",
-};
-
-const ANDROID_X86: BuildbotTarget = BuildbotTarget {
-    path: "android/latest/x86/",
-    archive_suffix: "_libretro_android",
-};
-
-const ANDROID_X86_64: BuildbotTarget = BuildbotTarget {
-    path: "android/latest/x86_64/",
-    archive_suffix: "_libretro_android",
-};
-
 fn buildbot_target_for(os: &str, arch: &str) -> Option<BuildbotTarget> {
-    match (os, arch) {
-        ("macos", "aarch64") => Some(MACOS_ARM64),
-        ("macos", "x86_64") => Some(MACOS_GENERIC),
-        ("macos", "powerpc") => Some(MACOS_PPC),
-        ("ios", _) => Some(IOS),
-        ("linux", "aarch64") => Some(LINUX_AARCH64),
-        ("linux", "x86_64") => Some(LINUX_X86_64),
-        ("linux", "x86") => Some(LINUX_X86),
-        ("linux", "arm") => Some(LINUX_ARMHF),
-        ("windows", "x86") => Some(WINDOWS_X86),
-        ("windows", "x86_64") => Some(WINDOWS_X86_64),
-        ("android", "aarch64") => Some(ANDROID_ARM64),
-        ("android", "arm") => Some(ANDROID_ARMV7),
-        ("android", "x86") => Some(ANDROID_X86),
-        ("android", "x86_64") => Some(ANDROID_X86_64),
-        _ => None,
-    }
+    let path = match (os, arch) {
+        ("macos", "aarch64") => "apple/osx/arm64/latest/",
+        ("macos", "x86_64") => "apple/osx/x86_64/latest/",
+        ("linux", "aarch64") => "linux/aarch64/latest/",
+        ("linux", "x86_64") => "linux/x86_64/latest/",
+        ("windows", "aarch64") => "windows/arm64/latest/",
+        ("windows", "x86_64") => "windows/x86_64/latest/",
+        _ => return None,
+    };
+    Some(BuildbotTarget {
+        path,
+        archive_suffix: "_libretro",
+    })
 }
 
 fn buildbot_target() -> Option<BuildbotTarget> {
@@ -669,69 +595,21 @@ mod tests {
 
     #[test]
     fn buildbot_targets_match_buildbot_artifacts() {
-        for (os, arch, path, archive_name, installed_name) in [
-            (
-                "linux",
-                "arm",
-                "linux/armhf/latest/",
-                "fceumm_libretro.so",
-                "fceumm_libretro.so",
-            ),
-            (
-                "linux",
-                "x86",
-                "linux/x86/latest/",
-                "fceumm_libretro.so",
-                "fceumm_libretro.so",
-            ),
-            (
-                "macos",
-                "powerpc",
-                "apple/osx/ppc/latest/",
-                "fceumm_libretro.dylib",
-                "fceumm_libretro.dylib",
-            ),
-            (
-                "ios",
-                "aarch64",
-                "apple/ios/latest/",
-                "fceumm_libretro_ios.dylib",
-                "fceumm_libretro.dylib",
-            ),
-            (
-                "android",
-                "aarch64",
-                "android/latest/arm64-v8a/",
-                "fceumm_libretro_android.so",
-                "fceumm_libretro.so",
-            ),
-            (
-                "android",
-                "arm",
-                "android/latest/armeabi-v7a/",
-                "fceumm_libretro_android.so",
-                "fceumm_libretro.so",
-            ),
-            (
-                "android",
-                "x86",
-                "android/latest/x86/",
-                "fceumm_libretro_android.so",
-                "fceumm_libretro.so",
-            ),
-            (
-                "android",
-                "x86_64",
-                "android/latest/x86_64/",
-                "fceumm_libretro_android.so",
-                "fceumm_libretro.so",
-            ),
+        for (os, arch, path) in [
+            ("macos", "aarch64", "apple/osx/arm64/latest/"),
+            ("macos", "x86_64", "apple/osx/x86_64/latest/"),
+            ("linux", "aarch64", "linux/aarch64/latest/"),
+            ("linux", "x86_64", "linux/x86_64/latest/"),
+            ("windows", "aarch64", "windows/arm64/latest/"),
+            ("windows", "x86_64", "windows/x86_64/latest/"),
         ] {
             let target = buildbot_target_for(os, arch).expect("expected buildbot target");
             assert_eq!(target.base_url(), format!("{BUILDBOT_BASE_URL}{path}"));
             let extension = core_extension_for(os);
-            assert_eq!(target.archive_name("fceumm", extension), archive_name);
-            assert_eq!(target.installed_name("fceumm", extension), installed_name);
+            assert_eq!(
+                target.archive_name("fceumm", extension),
+                target.installed_name("fceumm", extension)
+            );
         }
     }
 

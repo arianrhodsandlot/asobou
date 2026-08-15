@@ -2,7 +2,6 @@ use super::{Frame, Renderer, Viewport};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
-use image::{DynamicImage, RgbImage};
 use std::borrow::Cow;
 use std::io::{self, Write};
 
@@ -43,15 +42,9 @@ impl GraphicRenderer {
         }
     }
 
-    fn frame_to_image(frame: &Frame) -> DynamicImage {
-        RgbImage::from_raw(frame.width, frame.height, frame.data.clone())
-            .map(DynamicImage::ImageRgb8)
-            .unwrap_or_else(|| DynamicImage::ImageRgb8(RgbImage::new(frame.width, frame.height)))
-    }
-
     fn render_kitty_at(
         &self,
-        img: &DynamicImage,
+        frame: &Frame,
         out: &mut dyn io::Write,
         terminal_columns: u16,
         available_rows: u16,
@@ -65,17 +58,16 @@ impl GraphicRenderer {
                 .unwrap_or(usize::MAX)
                 .min(available_rows)
         });
-        let (columns, rows) = fit_cell_size(img.width(), img.height(), self.width, height as u32);
-        let pixels = img.to_rgb8();
+        let (columns, rows) = fit_cell_size(frame.width, frame.height, self.width, height as u32);
         let payload = if self.compression_enabled {
             let mut encoder = ZlibEncoder::new(
-                Vec::with_capacity(pixels.as_raw().len() / 2),
+                Vec::with_capacity(frame.data.len() / 2),
                 Compression::fast(),
             );
-            encoder.write_all(pixels.as_raw())?;
+            encoder.write_all(&frame.data)?;
             Cow::Owned(encoder.finish()?)
         } else {
-            Cow::Borrowed(pixels.as_raw().as_slice())
+            Cow::Borrowed(frame.data.as_slice())
         };
         let encoded = BASE64_STANDARD.encode(payload);
         let chunks = encoded.as_bytes().chunks(KITTY_CHUNK_SIZE);
@@ -90,10 +82,7 @@ impl GraphicRenderer {
                 write!(
                     command,
                     "\x1b_Ga=t,f=24,t=d{compression},s={},v={},i={},q=2,N=1,m={};",
-                    pixels.width(),
-                    pixels.height(),
-                    KITTY_IMAGE_ID,
-                    more
+                    frame.width, frame.height, KITTY_IMAGE_ID, more
                 )?;
             } else {
                 write!(command, "\x1b_Gm={more},q=2;")?;
@@ -120,21 +109,16 @@ impl Renderer for GraphicRenderer {
         viewport: Viewport,
         out: &mut dyn io::Write,
     ) -> io::Result<()> {
-        self.render_kitty_at(
-            &Self::frame_to_image(frame),
-            out,
-            viewport.columns,
-            viewport.rows,
-        )
+        self.render_kitty_at(frame, out, viewport.columns, viewport.rows)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{GraphicRenderer, KITTY_IMAGE_ID, KITTY_PLACEMENT_ID, fit_cell_size};
+    use crate::renderer::Frame;
     use base64::prelude::{BASE64_STANDARD, Engine as _};
     use flate2::read::ZlibDecoder;
-    use image::{DynamicImage, Rgb, RgbImage};
     use std::io::Read;
 
     #[test]
@@ -142,10 +126,16 @@ mod tests {
         let mut renderer = GraphicRenderer::new(true);
         renderer.width = Some(1);
         renderer.height = Some(1);
-        let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(2, 2, Rgb([1, 2, 3])));
+        let frame = Frame {
+            data: vec![1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3],
+            width: 2,
+            height: 2,
+        };
         let mut output = Vec::new();
 
-        renderer.render_kitty_at(&img, &mut output, 80, 24).unwrap();
+        renderer
+            .render_kitty_at(&frame, &mut output, 80, 24)
+            .unwrap();
 
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains(&format!("a=t,f=24,t=d,o=z,s=2,v=2,i={KITTY_IMAGE_ID}")));
@@ -160,13 +150,13 @@ mod tests {
     #[test]
     fn kitty_stream_compresses_rgb_payload_with_zlib() {
         let renderer = GraphicRenderer::new(true);
-        let img = DynamicImage::ImageRgb8(RgbImage::from_fn(4, 4, |x, y| {
-            Rgb([x as u8, y as u8, (x + y) as u8])
-        }));
-        let expected = img.to_rgb8().into_raw();
+        let frame = test_frame(4, 4);
+        let expected = frame.data.clone();
         let mut output = Vec::new();
 
-        renderer.render_kitty_at(&img, &mut output, 80, 24).unwrap();
+        renderer
+            .render_kitty_at(&frame, &mut output, 80, 24)
+            .unwrap();
 
         let output = String::from_utf8(output).unwrap();
         let payload = output
@@ -191,13 +181,13 @@ mod tests {
     #[test]
     fn kitty_stream_sends_uncompressed_rgb_when_compression_is_disabled() {
         let renderer = GraphicRenderer::new(false);
-        let img = DynamicImage::ImageRgb8(RgbImage::from_fn(4, 4, |x, y| {
-            Rgb([x as u8, y as u8, (x + y) as u8])
-        }));
-        let expected = img.to_rgb8().into_raw();
+        let frame = test_frame(4, 4);
+        let expected = frame.data.clone();
         let mut output = Vec::new();
 
-        renderer.render_kitty_at(&img, &mut output, 80, 24).unwrap();
+        renderer
+            .render_kitty_at(&frame, &mut output, 80, 24)
+            .unwrap();
 
         let output = String::from_utf8(output).unwrap();
         let command = output.split_once("\x1b_G").unwrap().1;
@@ -211,12 +201,12 @@ mod tests {
     #[test]
     fn kitty_stream_silences_every_image_chunk() {
         let renderer = GraphicRenderer::new(true);
-        let img = DynamicImage::ImageRgb8(RgbImage::from_fn(64, 64, |x, y| {
-            Rgb([x as u8, y as u8, (x ^ y) as u8])
-        }));
+        let frame = test_frame(64, 64);
         let mut output = Vec::new();
 
-        renderer.render_kitty_at(&img, &mut output, 80, 24).unwrap();
+        renderer
+            .render_kitty_at(&frame, &mut output, 80, 24)
+            .unwrap();
 
         let output = String::from_utf8(output).unwrap();
         let continuation_chunks = output
@@ -241,13 +231,30 @@ mod tests {
     #[test]
     fn kitty_stream_reserves_status_rows_below_the_image() {
         let renderer = GraphicRenderer::new(true);
-        let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(200, 200, Rgb([1, 2, 3])));
+        let frame = Frame {
+            data: vec![1; 200 * 200 * 3],
+            width: 200,
+            height: 200,
+        };
         let mut output = Vec::new();
 
-        renderer.render_kitty_at(&img, &mut output, 80, 22).unwrap();
+        renderer
+            .render_kitty_at(&frame, &mut output, 80, 22)
+            .unwrap();
 
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("\x1b[1;19H"));
         assert!(output.contains("c=44,r=22"));
+    }
+
+    fn test_frame(width: u32, height: u32) -> Frame {
+        let data = (0..height)
+            .flat_map(|y| (0..width).flat_map(move |x| [x as u8, y as u8, (x ^ y) as u8]))
+            .collect();
+        Frame {
+            data,
+            width,
+            height,
+        }
     }
 }

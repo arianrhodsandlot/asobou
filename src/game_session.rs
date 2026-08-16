@@ -380,6 +380,9 @@ pub fn run(config: Launch) -> Result<Outcome, Box<dyn std::error::Error>> {
         primary_screen,
         status_lines,
     })?;
+    if terminal.renderer_fell_back() {
+        terminal.show_message("kitty graphics unsupported — using block renderer");
+    }
 
     let fps = if av_info.timing.fps.is_finite() && av_info.timing.fps > 0.0 {
         av_info.timing.fps

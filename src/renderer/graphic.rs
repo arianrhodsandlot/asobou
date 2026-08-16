@@ -15,6 +15,19 @@ pub struct GraphicRenderer {
     compression_enabled: bool,
 }
 
+/// Expand 3-byte RGB pixels to 4-byte RGBA with opaque alpha. Rio's kitty
+/// graphics implementation fails to render RGB (`f=24`) payloads on Windows,
+/// so frames are always transmitted as RGBA (`f=32`).
+fn rgb_to_rgba(data: &[u8]) -> Vec<u8> {
+    debug_assert_eq!(data.len() % 3, 0, "frame data must be RGB triples");
+    let mut rgba = Vec::with_capacity(data.len() / 3 * 4);
+    for pixel in data.chunks(3) {
+        rgba.extend_from_slice(pixel);
+        rgba.push(0xff);
+    }
+    rgba
+}
+
 /// Size an image in terminal cells for kitty placement.
 ///
 /// A terminal cell is twice as tall as it is wide, so `cell_height` rows hold
@@ -59,15 +72,16 @@ impl GraphicRenderer {
                 .min(available_rows)
         });
         let (columns, rows) = fit_cell_size(frame.width, frame.height, self.width, height as u32);
+        let rgba = rgb_to_rgba(&frame.data);
         let payload = if self.compression_enabled {
             let mut encoder = ZlibEncoder::new(
-                Vec::with_capacity(frame.data.len() / 2),
+                Vec::with_capacity(rgba.len() / 2),
                 Compression::fast(),
             );
-            encoder.write_all(&frame.data)?;
+            encoder.write_all(&rgba)?;
             Cow::Owned(encoder.finish()?)
         } else {
-            Cow::Borrowed(frame.data.as_slice())
+            Cow::Owned(rgba)
         };
         let encoded = BASE64_STANDARD.encode(payload);
         let chunks = encoded.as_bytes().chunks(KITTY_CHUNK_SIZE);
@@ -81,7 +95,7 @@ impl GraphicRenderer {
                 let compression = if self.compression_enabled { ",o=z" } else { "" };
                 write!(
                     command,
-                    "\x1b_Ga=t,f=24,t=d{compression},s={},v={},i={},q=2,N=1,m={};",
+                    "\x1b_Ga=t,f=32,t=d{compression},s={},v={},i={},q=2,N=1,m={};",
                     frame.width, frame.height, KITTY_IMAGE_ID, more
                 )?;
             } else {
@@ -138,7 +152,7 @@ mod tests {
             .unwrap();
 
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains(&format!("a=t,f=24,t=d,o=z,s=2,v=2,i={KITTY_IMAGE_ID}")));
+        assert!(output.contains(&format!("a=t,f=32,t=d,o=z,s=2,v=2,i={KITTY_IMAGE_ID}")));
         assert!(output.contains(&format!(
             "a=p,i={KITTY_IMAGE_ID},p={KITTY_PLACEMENT_ID},c=1,r=1"
         )));
@@ -148,10 +162,14 @@ mod tests {
     }
 
     #[test]
-    fn kitty_stream_compresses_rgb_payload_with_zlib() {
+    fn kitty_stream_compresses_rgba_payload_with_zlib() {
         let renderer = GraphicRenderer::new(true);
         let frame = test_frame(4, 4);
-        let expected = frame.data.clone();
+        let mut expected = Vec::with_capacity(frame.data.len() / 3 * 4);
+        for pixel in frame.data.chunks(3) {
+            expected.extend_from_slice(pixel);
+            expected.push(0xff);
+        }
         let mut output = Vec::new();
 
         renderer
@@ -179,10 +197,14 @@ mod tests {
     }
 
     #[test]
-    fn kitty_stream_sends_uncompressed_rgb_when_compression_is_disabled() {
+    fn kitty_stream_sends_uncompressed_rgba_when_compression_is_disabled() {
         let renderer = GraphicRenderer::new(false);
         let frame = test_frame(4, 4);
-        let expected = frame.data.clone();
+        let mut expected = Vec::with_capacity(frame.data.len() / 3 * 4);
+        for pixel in frame.data.chunks(3) {
+            expected.extend_from_slice(pixel);
+            expected.push(0xff);
+        }
         let mut output = Vec::new();
 
         renderer

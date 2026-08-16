@@ -169,6 +169,7 @@ pub struct TerminalSession {
     release_events_supported: bool,
     ghostty: bool,
     synthetic_releases: bool,
+    renderer_fell_back: bool,
 }
 
 impl TerminalSession {
@@ -193,16 +194,38 @@ impl TerminalSession {
 
     fn start_active(settings: Settings, lifecycle: &mut Lifecycle) -> io::Result<Self> {
         let stdout_is_terminal = io::stdout().is_terminal();
-        let selected = select_renderer(
+        // Rio renders kitty graphics (with RGBA and no zlib), but its query
+        // responses never reach the app through Windows ConPTY, so probing
+        // always fails there; trust the environment for rio and probe
+        // everywhere else. An explicitly requested graphic renderer is
+        // probed even on the primary screen so it stays honored on
+        // capable terminals; auto mode never picks graphics on the primary
+        // screen without being asked.
+        let kitty_supported = if needs_kitty_capability(
             settings.renderer,
             settings.primary_screen,
             stdout_is_terminal,
+        ) {
+            if is_rio() {
+                true
+            } else {
+                let mut stdout = io::stdout();
+                probe_kitty_support(&mut stdout)
+            }
+        } else {
+            false
+        };
+        let (selected, renderer_fell_back) = resolve_renderer(
+            settings.renderer,
+            settings.primary_screen,
+            stdout_is_terminal,
+            kitty_supported,
         );
         let ghostty = is_ghostty();
         let renderer: Box<dyn Renderer> = match selected {
-            RendererMode::Graphic => {
-                Box::new(crate::renderer::graphic::GraphicRenderer::new(!ghostty))
-            }
+            RendererMode::Graphic => Box::new(crate::renderer::graphic::GraphicRenderer::new(
+                !ghostty && !is_rio(),
+            )),
             RendererMode::Block => Box::new(crate::renderer::block::BlockRenderer),
             RendererMode::Ascii => Box::new(crate::renderer::ascii::AsciiRenderer),
             RendererMode::Auto => unreachable!(),
@@ -248,6 +271,7 @@ impl TerminalSession {
             release_events_supported: cfg!(windows) || lifecycle.keyboard_flags,
             ghostty,
             synthetic_releases: cfg!(windows) && is_rio(),
+            renderer_fell_back,
             lifecycle: Lifecycle {
                 raw_mode: lifecycle.raw_mode,
                 focus: lifecycle.focus,
@@ -265,6 +289,10 @@ impl TerminalSession {
             ghostty: self.ghostty,
             synthetic_releases: self.synthetic_releases,
         }
+    }
+
+    pub fn renderer_fell_back(&self) -> bool {
+        self.renderer_fell_back
     }
 
     pub fn next_event(&self) -> io::Result<Option<Event>> {
@@ -313,22 +341,50 @@ impl Drop for TerminalSession {
     }
 }
 
-fn select_renderer(
+/// Whether kitty graphics capability needs to be determined (by probe or by
+/// trusting the environment) for the requested renderer and screen layout.
+/// Auto mode never asks on the primary screen (it renders with blocks there),
+/// while an explicitly requested graphic renderer is always checked so it can
+/// be honored on capable terminals.
+fn needs_kitty_capability(
     mode: RendererMode,
     primary_screen: bool,
     stdout_is_terminal: bool,
-) -> RendererMode {
+) -> bool {
+    stdout_is_terminal
+        && match mode {
+            RendererMode::Graphic => true,
+            RendererMode::Auto => !primary_screen,
+            RendererMode::Block | RendererMode::Ascii => false,
+        }
+}
+
+/// Choose the renderer from the requested mode and the kitty graphics
+/// capability probe. Returns the selected mode and whether an explicitly
+/// requested graphic renderer had to fall back (so the caller can warn).
+fn resolve_renderer(
+    mode: RendererMode,
+    primary_screen: bool,
+    stdout_is_terminal: bool,
+    kitty_supported: bool,
+) -> (RendererMode, bool) {
     match mode {
-        RendererMode::Auto if primary_screen || !stdout_is_terminal => RendererMode::Block,
+        RendererMode::Auto if primary_screen || !stdout_is_terminal => (RendererMode::Block, false),
         RendererMode::Auto => {
-            let mut stdout = io::stdout();
-            if probe_kitty_support(&mut stdout) {
-                RendererMode::Graphic
+            if kitty_supported {
+                (RendererMode::Graphic, false)
             } else {
-                RendererMode::Block
+                (RendererMode::Block, false)
             }
         }
-        explicit => explicit,
+        RendererMode::Graphic => {
+            if kitty_supported {
+                (RendererMode::Graphic, false)
+            } else {
+                (RendererMode::Block, true)
+            }
+        }
+        explicit => (explicit, false),
     }
 }
 
@@ -570,17 +626,76 @@ mod tests {
     #[test]
     fn primary_screen_auto_selects_block_without_probing() {
         assert_eq!(
-            select_renderer(RendererMode::Auto, true, true),
-            RendererMode::Block
+            resolve_renderer(RendererMode::Auto, true, true, false),
+            (RendererMode::Block, false)
         );
     }
 
     #[test]
     fn explicit_graphic_remains_selected_on_primary_screen() {
         assert_eq!(
-            select_renderer(RendererMode::Graphic, true, true),
-            RendererMode::Graphic
+            resolve_renderer(RendererMode::Graphic, true, true, true),
+            (RendererMode::Graphic, false)
         );
+    }
+
+    #[test]
+    fn auto_selects_graphic_when_kitty_is_supported() {
+        assert_eq!(
+            resolve_renderer(RendererMode::Auto, false, true, true),
+            (RendererMode::Graphic, false)
+        );
+    }
+
+    #[test]
+    fn explicit_graphic_falls_back_to_block_without_kitty_support() {
+        assert_eq!(
+            resolve_renderer(RendererMode::Graphic, false, true, false),
+            (RendererMode::Block, true)
+        );
+    }
+
+    #[test]
+    fn redirected_output_auto_selects_block_without_probing() {
+        assert_eq!(
+            resolve_renderer(RendererMode::Auto, false, false, true),
+            (RendererMode::Block, false)
+        );
+    }
+
+    #[test]
+    fn explicit_graphic_probes_even_on_the_primary_screen() {
+        assert!(needs_kitty_capability(RendererMode::Graphic, true, true));
+    }
+
+    #[test]
+    fn explicit_graphic_stays_selected_on_the_primary_screen_when_supported() {
+        assert_eq!(
+            resolve_renderer(RendererMode::Graphic, true, true, true),
+            (RendererMode::Graphic, false)
+        );
+    }
+
+    #[test]
+    fn auto_never_probes_on_the_primary_screen() {
+        assert!(!needs_kitty_capability(RendererMode::Auto, true, true));
+    }
+
+    #[test]
+    fn auto_probes_off_the_primary_screen() {
+        assert!(needs_kitty_capability(RendererMode::Auto, false, true));
+    }
+
+    #[test]
+    fn block_and_ascii_never_probe() {
+        assert!(!needs_kitty_capability(RendererMode::Block, false, true));
+        assert!(!needs_kitty_capability(RendererMode::Ascii, false, true));
+    }
+
+    #[test]
+    fn nothing_probes_with_redirected_output() {
+        assert!(!needs_kitty_capability(RendererMode::Graphic, false, false));
+        assert!(!needs_kitty_capability(RendererMode::Auto, false, false));
     }
 
     #[test]

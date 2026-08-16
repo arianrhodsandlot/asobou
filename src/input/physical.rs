@@ -58,6 +58,7 @@ impl PhysicalInput {
                 bindings,
                 capabilities.release_events_supported,
                 capabilities.ghostty,
+                capabilities.synthetic_releases,
                 gamepads,
             ),
             warning,
@@ -68,10 +69,11 @@ impl PhysicalInput {
         bindings: InputBindings,
         release_events_supported: bool,
         ghostty: bool,
+        synthetic_releases: bool,
         gamepads: Option<gilrs::Gilrs>,
     ) -> Self {
         Self {
-            state: InputState::with_bindings(bindings, release_events_supported),
+            state: InputState::with_bindings(bindings, release_events_supported, synthetic_releases),
             gamepads,
             active_gamepad: None,
             focused: true,
@@ -82,7 +84,7 @@ impl PhysicalInput {
 
     #[cfg(test)]
     fn without_gamepad(bindings: InputBindings, release_events_supported: bool) -> Self {
-        Self::from_parts(bindings, release_events_supported, false, None)
+        Self::from_parts(bindings, release_events_supported, false, false, None)
     }
 
     pub fn poll(
@@ -535,7 +537,7 @@ mod tests {
     #[test]
     fn ghostty_unreported_control_sequence_requests_quit() {
         let now = Instant::now();
-        let mut input = PhysicalInput::from_parts(InputBindings::default(), true, true, None);
+        let mut input = PhysicalInput::from_parts(InputBindings::default(), true, true, false, None);
         let control = KeyCode::Modifier(ModifierKeyCode::LeftControl);
         let mut terminal = ScriptedTerminal::new([
             TerminalObservation::Key(KeyEvent::new_with_kind(

@@ -1,6 +1,8 @@
 use super::bindings::InputKey;
 use super::joypad::{apply_left_stick, default_gamepad_button};
-use super::state::{INITIAL_HOLD_GRACE, RELEASE_EVENT_FAILSAFE, REPEAT_TIMEOUT};
+use super::state::{
+    INITIAL_HOLD_GRACE, RELEASE_EVENT_FAILSAFE, REPEAT_TIMEOUT, SPURIOUS_RELEASE_WINDOW,
+};
 use super::*;
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, ModifierKeyCode,
@@ -72,6 +74,106 @@ fn press_repeat_and_release_update_a_button() {
         key(KeyCode::Right, KeyEventKind::Release),
         now + Duration::from_millis(201),
     );
+    assert!(!pressed(&state, BUTTON_RIGHT));
+}
+
+#[test]
+fn synthetic_release_within_spurious_window_keeps_button_until_failsafe() {
+    // rio on Windows delivers key-up in the same millisecond as key-down.
+    let now = Instant::now();
+    let mut state = InputState::with_synthetic_releases(true);
+
+    state.handle_key(key(KeyCode::Char('x'), KeyEventKind::Press), now);
+    state.handle_key(
+        key(KeyCode::Char('x'), KeyEventKind::Release),
+        now + Duration::from_millis(4),
+    );
+    state.expire(now + Duration::from_millis(16));
+
+    // The spurious release must not erase the press: the button stays held
+    // for a normal frame, then clears via the release failsafe.
+    assert!(pressed(&state, BUTTON_A));
+
+    state.expire(now + RELEASE_EVENT_FAILSAFE);
+    assert!(!pressed(&state, BUTTON_A));
+}
+
+#[test]
+fn synthetic_release_after_the_spurious_window_still_releases_immediately() {
+    let now = Instant::now();
+    let mut state = InputState::with_synthetic_releases(true);
+
+    state.handle_key(key(KeyCode::Char('x'), KeyEventKind::Press), now);
+    state.handle_key(
+        key(KeyCode::Char('x'), KeyEventKind::Release),
+        now + SPURIOUS_RELEASE_WINDOW,
+    );
+
+    assert!(!pressed(&state, BUTTON_A));
+}
+
+#[test]
+fn healthy_terminal_honors_a_release_within_the_spurious_window() {
+    // Without the synthetic-release mode, timing is never second-guessed.
+    let now = Instant::now();
+    let mut state = InputState::with_release_events_supported(true);
+
+    state.handle_key(key(KeyCode::Char('x'), KeyEventKind::Press), now);
+    state.handle_key(
+        key(KeyCode::Char('x'), KeyEventKind::Release),
+        now + Duration::from_millis(1),
+    );
+
+    assert!(!pressed(&state, BUTTON_A));
+}
+
+#[test]
+fn synthetic_release_within_spurious_window_keeps_rewind_until_failsafe() {
+    let now = Instant::now();
+    let mut state = InputState::with_synthetic_releases(true);
+
+    state.handle_key(key(KeyCode::Char('r'), KeyEventKind::Press), now);
+    state.handle_key(
+        key(KeyCode::Char('r'), KeyEventKind::Release),
+        now + Duration::from_millis(4),
+    );
+    state.expire(now + Duration::from_millis(16));
+
+    assert!(state.rewind_pressed());
+
+    state.expire(now + RELEASE_EVENT_FAILSAFE);
+    assert!(!state.rewind_pressed());
+}
+
+#[test]
+fn synthetic_releases_do_not_stick_earlier_keys() {
+    let now = Instant::now();
+    let mut state = InputState::with_synthetic_releases(true);
+
+    state.handle_key(key(KeyCode::Char('x'), KeyEventKind::Press), now);
+    state.handle_key(
+        key(KeyCode::Char('x'), KeyEventKind::Release),
+        now + Duration::from_millis(4),
+    );
+    state.handle_key(
+        key(KeyCode::Right, KeyEventKind::Press),
+        now + Duration::from_millis(400),
+    );
+    state.handle_key(
+        key(KeyCode::Right, KeyEventKind::Release),
+        now + Duration::from_millis(404),
+    );
+    state.expire(now + Duration::from_millis(420));
+    assert!(pressed(&state, BUTTON_A));
+    assert!(pressed(&state, BUTTON_RIGHT));
+
+    // X's failsafe elapses (press + 650ms); Right's has not.
+    state.expire(now + Duration::from_millis(650));
+    assert!(!pressed(&state, BUTTON_A));
+    assert!(pressed(&state, BUTTON_RIGHT));
+
+    // Right's failsafe elapses too; nothing sticks.
+    state.expire(now + Duration::from_millis(400 + 650));
     assert!(!pressed(&state, BUTTON_RIGHT));
 }
 
@@ -153,10 +255,19 @@ fn release_failsafe_preserves_other_held_keys() {
     assert!(pressed(&state, BUTTON_RIGHT));
     assert!(pressed(&state, BUTTON_A));
 
+    // The failsafe clears the last-pressed key whose release was lost, but
+    // preserves the key held before it: its repeats may have stopped only
+    // because another key was pressed, and its release has not arrived yet.
     state.expire(now + Duration::from_millis(850));
 
     assert!(pressed(&state, BUTTON_RIGHT));
     assert!(!pressed(&state, BUTTON_A));
+
+    state.handle_key(
+        key(KeyCode::Right, KeyEventKind::Release),
+        now + Duration::from_millis(900),
+    );
+    assert!(!pressed(&state, BUTTON_RIGHT));
 }
 
 #[test]
@@ -181,7 +292,7 @@ fn q_is_not_a_default_quit_key() {
 #[test]
 fn configured_quit_key_requests_shutdown() {
     let bindings = bindings(&[("a", BUTTON_A, "x")], "q", "r", true);
-    let mut state = InputState::with_bindings(bindings, false);
+    let mut state = InputState::with_bindings(bindings, false, false);
 
     state.handle_key(key(KeyCode::Char('q'), KeyEventKind::Press), Instant::now());
 
@@ -202,7 +313,7 @@ fn ctrl_r_does_not_clear_held_buttons() {
 #[test]
 fn numpad_binding_does_not_match_the_number_row() {
     let bindings = bindings(&[("a", BUTTON_A, "numpad-1")], "esc", "r", true);
-    let mut state = InputState::with_bindings(bindings, true);
+    let mut state = InputState::with_bindings(bindings, true, false);
 
     state.handle_key(key(KeyCode::Char('1'), KeyEventKind::Press), Instant::now());
 
@@ -212,7 +323,7 @@ fn numpad_binding_does_not_match_the_number_row() {
 #[test]
 fn numpad_binding_matches_keypad_events() {
     let bindings = bindings(&[("a", BUTTON_A, "numpad-1")], "esc", "r", true);
-    let mut state = InputState::with_bindings(bindings, true);
+    let mut state = InputState::with_bindings(bindings, true, false);
     let event = KeyEvent::new_with_kind_and_state(
         KeyCode::Char('1'),
         KeyModifiers::NONE,
@@ -228,7 +339,7 @@ fn numpad_binding_matches_keypad_events() {
 #[test]
 fn numpad_binding_ignores_num_lock_state() {
     let bindings = bindings(&[("a", BUTTON_A, "numpad-1")], "esc", "r", true);
-    let mut state = InputState::with_bindings(bindings, true);
+    let mut state = InputState::with_bindings(bindings, true, false);
     let event = KeyEvent::new_with_kind_and_state(
         KeyCode::End,
         KeyModifiers::NONE,
@@ -296,7 +407,7 @@ fn retroarch_key_names_map_to_expected_codes() {
 #[test]
 fn printable_plus_is_a_valid_binding() {
     let bindings = bindings(&[("a", BUTTON_A, "+")], "esc", "r", true);
-    let mut state = InputState::with_bindings(bindings, false);
+    let mut state = InputState::with_bindings(bindings, false, false);
 
     state.handle_key(key(KeyCode::Char('+'), KeyEventKind::Press), Instant::now());
 
@@ -359,7 +470,7 @@ fn rewind_key_stays_pressed_until_release() {
 
     state.handle_key(
         key(KeyCode::Char('r'), KeyEventKind::Release),
-        now + Duration::from_millis(1),
+        now + Duration::from_millis(100),
     );
     assert!(!state.rewind_pressed());
 }
@@ -367,7 +478,7 @@ fn rewind_key_stays_pressed_until_release() {
 #[test]
 fn rewind_key_uses_the_configured_binding() {
     let bindings = bindings(&[], "esc", "y", true);
-    let mut state = InputState::with_bindings(bindings, true);
+    let mut state = InputState::with_bindings(bindings, true, false);
 
     state.handle_key(key(KeyCode::Char('r'), KeyEventKind::Press), Instant::now());
     assert!(!state.rewind_pressed());
@@ -400,7 +511,7 @@ fn rewind_key_conflicts_with_gamepad_and_quit_bindings() {
 #[test]
 fn disabled_rewind_frees_the_key_for_gamepad() {
     let bindings = bindings(&[("a", BUTTON_A, "r")], "esc", "r", false);
-    let mut state = InputState::with_bindings(bindings, true);
+    let mut state = InputState::with_bindings(bindings, true, false);
 
     state.handle_key(key(KeyCode::Char('r'), KeyEventKind::Press), Instant::now());
 
@@ -588,7 +699,7 @@ fn save_and_load_keys_conflict_with_other_bindings() {
 #[test]
 fn save_and_load_use_the_configured_bindings() {
     let bindings = InputBindings::new(&[], "esc", "r", "f1", "f3", true).unwrap();
-    let mut state = InputState::with_bindings(bindings, true);
+    let mut state = InputState::with_bindings(bindings, true, false);
 
     state.handle_key(key(KeyCode::F(2), KeyEventKind::Press), Instant::now());
     assert!(!state.take_save());
@@ -727,7 +838,7 @@ fn select_and_l1_holds_rewind() {
 #[test]
 fn disabled_rewind_disables_the_gamepad_hotkey() {
     let bindings = bindings(&[], "esc", "r", false);
-    let mut state = InputState::with_bindings(bindings, true);
+    let mut state = InputState::with_bindings(bindings, true, false);
 
     state.update_gamepad(gamepad_buttons(&[BUTTON_SELECT, BUTTON_L]));
 

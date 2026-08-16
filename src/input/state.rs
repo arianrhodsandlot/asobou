@@ -7,6 +7,15 @@ use super::joypad::*;
 pub(super) const REPEAT_TIMEOUT: Duration = Duration::from_millis(140);
 pub(super) const INITIAL_HOLD_GRACE: Duration = Duration::from_millis(250);
 pub(super) const RELEASE_EVENT_FAILSAFE: Duration = Duration::from_millis(650);
+// Rio on Windows delivers keyboard input through ConPTY and synthesizes a
+// key-up in the same millisecond as every key-down (and never repeats while a
+// key is held), whereas healthy terminals report the true physical key-up.
+// Trusting rio's instant release collapses a press into zero frames of input.
+// The workaround is restricted to that identifiable mode (see
+// `synthetic_releases`): a release arriving within this window of its press
+// is treated as spurious and the key is kept pressed until the release
+// failsafe expires instead.
+pub(super) const SPURIOUS_RELEASE_WINDOW: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy)]
 struct KeyState {
@@ -39,6 +48,10 @@ pub(super) struct InputState {
     keys: Vec<KeyState>,
     quit_requested: bool,
     release_events_supported: bool,
+    // Set for terminals whose releases cannot be trusted (rio on Windows
+    // through ConPTY): releases arrive within milliseconds of their press,
+    // so releases are debounced and every pressed key needs the failsafe.
+    synthetic_releases: bool,
     failsafe_key: Option<usize>,
     rewind_key: KeyState,
     rewind_failsafe: bool,
@@ -53,17 +66,26 @@ pub(super) struct InputState {
 
 impl Default for InputState {
     fn default() -> Self {
-        Self::with_bindings(InputBindings::default(), false)
+        Self::with_bindings(InputBindings::default(), false, false)
     }
 }
 
 impl InputState {
     #[cfg(test)]
     pub(super) fn with_release_events_supported(release_events_supported: bool) -> Self {
-        Self::with_bindings(InputBindings::default(), release_events_supported)
+        Self::with_bindings(InputBindings::default(), release_events_supported, false)
     }
 
-    pub fn with_bindings(bindings: InputBindings, release_events_supported: bool) -> Self {
+    #[cfg(test)]
+    pub(super) fn with_synthetic_releases(release_events_supported: bool) -> Self {
+        Self::with_bindings(InputBindings::default(), release_events_supported, true)
+    }
+
+    pub fn with_bindings(
+        bindings: InputBindings,
+        release_events_supported: bool,
+        synthetic_releases: bool,
+    ) -> Self {
         let keys = vec![KeyState::new(); bindings.gamepad.len()];
         Self {
             bindings,
@@ -71,6 +93,7 @@ impl InputState {
             keys,
             quit_requested: false,
             release_events_supported,
+            synthetic_releases,
             failsafe_key: None,
             rewind_key: KeyState::new(),
             rewind_failsafe: false,
@@ -106,11 +129,13 @@ impl InputState {
                     self.rewind_failsafe = true;
                 }
                 KeyEventKind::Release => {
-                    self.rewind_key.pressed = false;
-                    self.rewind_key.last_seen = None;
-                    self.rewind_key.repeat_seen = false;
-                    self.rewind_failsafe = false;
-                    self.release_events_supported = true;
+                    if !self.is_spurious_release(self.rewind_key.last_seen, now) {
+                        self.rewind_key.pressed = false;
+                        self.rewind_key.last_seen = None;
+                        self.rewind_key.repeat_seen = false;
+                        self.rewind_failsafe = false;
+                        self.release_events_supported = true;
+                    }
                 }
             }
             return;
@@ -149,12 +174,16 @@ impl InputState {
                 self.failsafe_key = Some(key_id);
             }
             KeyEventKind::Release => {
-                key.pressed = false;
-                key.last_seen = None;
-                key.repeat_seen = false;
-                self.release_events_supported = true;
-                if self.failsafe_key == Some(key_id) {
-                    self.failsafe_key = None;
+                let spurious = self.is_spurious_release(self.keys[key_id].last_seen, now);
+                if !spurious {
+                    let key = &mut self.keys[key_id];
+                    key.pressed = false;
+                    key.last_seen = None;
+                    key.repeat_seen = false;
+                    self.release_events_supported = true;
+                    if self.failsafe_key == Some(key_id) {
+                        self.failsafe_key = None;
+                    }
                 }
             }
         }
@@ -269,37 +298,28 @@ impl InputState {
 
     pub fn expire(&mut self, now: Instant) {
         if self.release_events_supported {
-            if let Some(key_id) = self.failsafe_key {
-                let key = &mut self.keys[key_id];
-                let timeout = if key.repeat_seen {
-                    REPEAT_TIMEOUT
-                } else {
-                    RELEASE_EVENT_FAILSAFE
-                };
-                if key
-                    .last_seen
-                    .is_some_and(|last_seen| now.saturating_duration_since(last_seen) >= timeout)
+            if self.synthetic_releases {
+                // Every release from this terminal is synthesized right after
+                // its press, so any pressed key whose events have stopped
+                // needs the failsafe to avoid being stuck forever.
+                for key in &mut self.keys {
+                    expire_held_key(key, now, RELEASE_EVENT_FAILSAFE);
+                }
+                expire_held_key(&mut self.rewind_key, now, RELEASE_EVENT_FAILSAFE);
+            } else {
+                // Healthy terminals report real releases. Only the most
+                // recently pressed key needs a failsafe (a release can still
+                // be lost); keys held before it must stay pressed until
+                // their own release arrives, even when repeats have stopped
+                // because another key was pressed.
+                if let Some(key_id) = self.failsafe_key
+                    && expire_held_key(&mut self.keys[key_id], now, RELEASE_EVENT_FAILSAFE)
                 {
-                    key.pressed = false;
-                    key.last_seen = None;
-                    key.repeat_seen = false;
                     self.failsafe_key = None;
                 }
-            }
-            if self.rewind_failsafe {
-                let key = &mut self.rewind_key;
-                let timeout = if key.repeat_seen {
-                    REPEAT_TIMEOUT
-                } else {
-                    RELEASE_EVENT_FAILSAFE
-                };
-                if key
-                    .last_seen
-                    .is_some_and(|last_seen| now.saturating_duration_since(last_seen) >= timeout)
+                if self.rewind_failsafe
+                    && expire_held_key(&mut self.rewind_key, now, RELEASE_EVENT_FAILSAFE)
                 {
-                    key.pressed = false;
-                    key.last_seen = None;
-                    key.repeat_seen = false;
                     self.rewind_failsafe = false;
                 }
             }
@@ -310,39 +330,9 @@ impl InputState {
         }
 
         for key in &mut self.keys {
-            if !key.pressed {
-                continue;
-            }
-            let timeout = if key.repeat_seen {
-                REPEAT_TIMEOUT
-            } else {
-                INITIAL_HOLD_GRACE
-            };
-            if key
-                .last_seen
-                .is_some_and(|last_seen| now.saturating_duration_since(last_seen) >= timeout)
-            {
-                key.pressed = false;
-                key.last_seen = None;
-                key.repeat_seen = false;
-            }
+            expire_held_key(key, now, INITIAL_HOLD_GRACE);
         }
-        if self.rewind_key.pressed {
-            let timeout = if self.rewind_key.repeat_seen {
-                REPEAT_TIMEOUT
-            } else {
-                INITIAL_HOLD_GRACE
-            };
-            if self
-                .rewind_key
-                .last_seen
-                .is_some_and(|last_seen| now.saturating_duration_since(last_seen) >= timeout)
-            {
-                self.rewind_key.pressed = false;
-                self.rewind_key.last_seen = None;
-                self.rewind_key.repeat_seen = false;
-            }
-        }
+        expire_held_key(&mut self.rewind_key, now, INITIAL_HOLD_GRACE);
         Self::expire_one_shot(&mut self.save_state, now, self.release_events_supported);
         Self::expire_one_shot(&mut self.load_state, now, self.release_events_supported);
         self.rebuild_buttons();
@@ -410,6 +400,11 @@ impl InputState {
         }
     }
 
+    fn is_spurious_release(&self, last_seen: Option<Instant>, now: Instant) -> bool {
+        self.synthetic_releases
+            && last_seen.is_some_and(|press| now.saturating_duration_since(press) < SPURIOUS_RELEASE_WINDOW)
+    }
+
     fn is_quit_key(&self, event: KeyEvent) -> bool {
         is_ctrl_c(event) || InputKey::from_event(event) == self.bindings.quit
     }
@@ -418,4 +413,25 @@ impl InputState {
 fn is_ctrl_c(event: KeyEvent) -> bool {
     matches!(event.code, KeyCode::Char(character) if character.eq_ignore_ascii_case(&'c'))
         && event.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn expire_held_key(key: &mut KeyState, now: Instant, no_repeat_timeout: Duration) -> bool {
+    if !key.pressed {
+        return false;
+    }
+    let timeout = if key.repeat_seen {
+        REPEAT_TIMEOUT
+    } else {
+        no_repeat_timeout
+    };
+    if key
+        .last_seen
+        .is_some_and(|last_seen| now.saturating_duration_since(last_seen) >= timeout)
+    {
+        key.pressed = false;
+        key.last_seen = None;
+        key.repeat_seen = false;
+        return true;
+    }
+    false
 }

@@ -32,6 +32,7 @@ pub struct Settings {
 pub struct InputCapabilities {
     pub release_events_supported: bool,
     pub ghostty: bool,
+    pub synthetic_releases: bool,
 }
 
 struct LatestFrameMailbox {
@@ -167,6 +168,7 @@ pub struct TerminalSession {
     lifecycle: Lifecycle,
     release_events_supported: bool,
     ghostty: bool,
+    synthetic_releases: bool,
 }
 
 impl TerminalSession {
@@ -245,6 +247,7 @@ impl TerminalSession {
             thread: Some(thread),
             release_events_supported: cfg!(windows) || lifecycle.keyboard_flags,
             ghostty,
+            synthetic_releases: cfg!(windows) && is_rio(),
             lifecycle: Lifecycle {
                 raw_mode: lifecycle.raw_mode,
                 focus: lifecycle.focus,
@@ -260,6 +263,7 @@ impl TerminalSession {
         InputCapabilities {
             release_events_supported: self.release_events_supported,
             ghostty: self.ghostty,
+            synthetic_releases: self.synthetic_releases,
         }
     }
 
@@ -503,6 +507,17 @@ fn is_ghostty_values(term_program: Option<&OsStr>, term: Option<&OsStr>) -> bool
         })
 }
 
+pub fn is_rio() -> bool {
+    let term_program = std::env::var_os("TERM_PROGRAM");
+    let term = std::env::var_os("TERM");
+    is_rio_values(term_program.as_deref(), term.as_deref())
+}
+
+fn is_rio_values(term_program: Option<&OsStr>, term: Option<&OsStr>) -> bool {
+    term_program.is_some_and(|value| value.to_string_lossy().eq_ignore_ascii_case("rio"))
+        || term.is_some_and(|value| value.to_string_lossy().eq_ignore_ascii_case("rio"))
+}
+
 impl fmt::Debug for TerminalSession {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -518,6 +533,16 @@ mod tests {
     #[test]
     fn detects_term_program() {
         assert!(is_ghostty_values(Some("Ghostty".as_ref()), None));
+    }
+
+    #[test]
+    fn detects_rio_term_program() {
+        assert!(is_rio_values(Some("rio".as_ref()), None));
+    }
+
+    #[test]
+    fn detects_rio_term() {
+        assert!(is_rio_values(None, Some("rio".as_ref())));
     }
 
     #[test]

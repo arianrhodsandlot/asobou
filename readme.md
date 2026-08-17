@@ -24,7 +24,10 @@
 <p align="center">Play retro games directly in your terminal</p>
 
 <p align="center">
-  <img src="docs/images/screenshots/example.gif" alt="example">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshots/example-dark.gif">
+    <img src="docs/images/screenshots/example.gif" alt="Asobou logo">
+  </picture>
 </p>
 
 > [!note]
